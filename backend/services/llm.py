@@ -1,22 +1,21 @@
-"""LLM service backed by Emergent Universal LLM Key (real OpenAI calls).
+"""LLM service backed by OpenAI (api.openai.com).
 
-Real production calls use emergentintegrations.LlmChat. We default to GPT-4o
-as specified, but the model is configurable.
+Defaults to GPT-4o; the model is configurable per call.
+Reads OPENAI_API_KEY from env (falls back to EMERGENT_LLM_KEY).
 """
 import logging
 import os
-import uuid
 from typing import Optional
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from openai import AsyncOpenAI
 
 logger = logging.getLogger("jalwa.llm")
 
 
 def _api_key() -> str:
-    key = os.environ.get("EMERGENT_LLM_KEY")
+    key = os.environ.get("OPENAI_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")
     if not key:
-        raise RuntimeError("EMERGENT_LLM_KEY missing in environment")
+        raise RuntimeError("OPENAI_API_KEY missing in environment")
     return key
 
 
@@ -27,17 +26,20 @@ async def chat_completion(
     provider: str = "openai",
     session_id: Optional[str] = None,
 ) -> str:
-    """Single-turn completion."""
-    chat = LlmChat(
-        api_key=_api_key(),
-        session_id=session_id or str(uuid.uuid4()),
-        system_message=system_message,
-    ).with_model(provider, model)
+    """Single-turn completion using OpenAI."""
     try:
-        return await chat.send_message(UserMessage(text=user_text))
+        client = AsyncOpenAI(api_key=_api_key())
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_text},
+            ],
+        )
+        return response.choices[0].message.content or ""
     except Exception as e:
         logger.exception("LLM call failed: %s", e)
-        # Graceful degradation so the API never crashes if key is exhausted
+        # Graceful degradation so the API never crashes if the key is missing
         return f"[LLM unavailable: {e.__class__.__name__}]"
 
 
