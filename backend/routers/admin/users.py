@@ -1,0 +1,245 @@
+"""Admin dashboard + users management."""
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+
+from core.database import get_db
+from core.dependencies import get_admin_session
+from core.response import APIError, ok, paginate
+from core.security import utcnow_iso
+from services import mocks
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+class PlanChangeReq(BaseModel):
+    planId: str
+
+
+class StatusReq(BaseModel):
+    status: str  # active | suspended
+
+
+class TrialReq(BaseModel):
+    days: int
+
+
+class NoteReq(BaseModel):
+    note: str
+
+
+# ============================ DASHBOARD ===================================
+
+@router.get("/dashboard/stats", dependencies=[Depends(get_admin_session)])
+async def stats():
+    db = get_db()
+    now = datetime.now(timezone.utc)
+    today_iso = now.replace(hour=0, minute=0, second=0).isoformat()
+    week_iso = (now - timedelta(days=7)).isoformat()
+    month_iso = (now - timedelta(days=30)).isoformat()
+
+    total_users = await db.users.count_documents({"deleted": {"$ne": True}})
+    paid_users = await db.subscriptions.distinct(
+        "userId", {"status": {"$in": ["ACTIVE", "TRIALING"]}})
+    paid_count = len(paid_users)
+
+    subs = await db.subscriptions.find(
+        {"status": "ACTIVE"}, {"_id": 0}).to_list(2000)
+    plan_ids = list({s["planId"] for s in subs if s.get("planId")})
+    plans = await db.plans.find(
+        {"id": {"$in": plan_ids}}, {"_id": 0}).to_list(50)
+    plan_map = {p["id"]: p for p in plans}
+    mrr = 0.0
+    plan_distribution = {"starter": 0, "growth": 0, "agency": 0}
+    for s in subs:
+        plan = plan_map.get(s.get("planId"))
+        if not plan:
+            continue
+        mrr += float(plan.get("monthlyPrice", 0))
+        name = plan["name"].lower()
+        if name in plan_distribution:
+            plan_distribution[name] += 1
+
+    churn_month = await db.subscriptions.count_documents({
+        "status": "CANCELLED", "updatedAt": {"$gte": month_iso}})
+    new_today = await db.users.count_documents({"createdAt": {"$gte": today_iso}})
+    new_week = await db.users.count_documents({"createdAt": {"$gte": week_iso}})
+    new_month = await db.users.count_documents({"createdAt": {"$gte": month_iso}})
+
+    return ok({
+        "totalUsers": total_users,
+        "paidUsers": paid_count,
+        "freeUsers": total_users - paid_count,
+        "MRR": round(mrr, 2),
+        "churnThisMonth": churn_month,
+        "newSignupsToday": new_today,
+        "newSignupsThisWeek": new_week,
+        "newSignupsThisMonth": new_month,
+        "planDistribution": plan_distribution,
+    })
+
+
+@router.get("/dashboard/activity",
+            dependencies=[Depends(get_admin_session)])
+async def activity(limit: int = 20):
+    db = get_db()
+    users = await db.users.find(
+        {"deleted": {"$ne": True}},
+        {"_id": 0, "password": 0}).sort("createdAt", -1).limit(limit).to_list(limit)
+    subs = await db.subscriptions.find(
+        {}, {"_id": 0}).sort("createdAt", -1).limit(limit).to_list(limit)
+    events = []
+    for u in users:
+        events.append({"type": "signup", "userId": u["id"],
+                       "email": u["email"], "at": u["createdAt"]})
+    for s in subs:
+        events.append({
+            "type": "subscription_" + s.get("status", "?").lower(),
+            "userId": s["userId"],
+            "planId": s.get("planId"), "at": s.get("createdAt")})
+    events.sort(key=lambda x: x.get("at", ""), reverse=True)
+    return ok(events[:limit])
+
+
+# =============================== USERS ====================================
+
+@router.get("/users", dependencies=[Depends(get_admin_session)])
+async def list_users(page: int = 1, limit: int = 20,
+                     search: Optional[str] = None,
+                     plan: Optional[str] = None,
+                     status: Optional[str] = None):
+    db = get_db()
+    q: dict = {"deleted": {"$ne": True}}
+    if search:
+        q["$or"] = [{"email": {"$regex": search, "$options": "i"}},
+                    {"fullName": {"$regex": search, "$options": "i"}}]
+    total = await db.users.count_documents(q)
+    rows = await db.users.find(q, {"_id": 0, "password": 0}).sort(
+        "createdAt", -1).skip((page - 1) * limit).limit(limit).to_list(limit)
+    # Attach subscription
+    for r in rows:
+        sub = await db.subscriptions.find_one(
+            {"userId": r["id"]}, {"_id": 0}, sort=[("createdAt", -1)])
+        r["subscription"] = sub
+    return ok(rows, pagination=paginate(rows, total, page, limit))
+
+
+@router.get("/users/{user_id}", dependencies=[Depends(get_admin_session)])
+async def user_detail(user_id: str):
+    db = get_db()
+    user = await db.users.find_one({"id": user_id},
+                                   {"_id": 0, "password": 0})
+    if not user:
+        raise APIError("User not found", "NOT_FOUND", 404)
+    sub = await db.subscriptions.find_one(
+        {"userId": user_id}, {"_id": 0}, sort=[("createdAt", -1)])
+    inv = await db.invoices.find({"userId": user_id}, {"_id": 0}).to_list(100)
+    sites = await db.sites.find(
+        {"userId": user_id, "deleted": {"$ne": True}}, {"_id": 0}).to_list(100)
+    social = await db.social_accounts.find(
+        {"userId": user_id},
+        {"_id": 0, "accessToken": 0, "refreshToken": 0}).to_list(100)
+    usage = {
+        "articles": await db.articles.count_documents(
+            {"userId": user_id, "deleted": {"$ne": True}}),
+        "socialPosts": await db.social_posts.count_documents({"userId": user_id}),
+        "aiScans": await db.ai_visibility_scans.count_documents({"userId": user_id}),
+    }
+    return ok({"user": user, "subscription": sub, "invoices": inv,
+               "sites": sites, "socialAccounts": social, "usage": usage})
+
+
+@router.put("/users/{user_id}/plan",
+            dependencies=[Depends(get_admin_session)])
+async def change_plan(user_id: str, body: PlanChangeReq):
+    db = get_db()
+    plan = await db.plans.find_one({"id": body.planId}, {"_id": 0})
+    if not plan:
+        raise APIError("Plan not found", "NOT_FOUND", 404)
+    sub = await db.subscriptions.find_one(
+        {"userId": user_id}, {"_id": 0}, sort=[("createdAt", -1)])
+    if sub:
+        await db.subscriptions.update_one(
+            {"id": sub["id"]},
+            {"$set": {"planId": body.planId, "status": "ACTIVE",
+                      "updatedAt": utcnow_iso()}})
+    else:
+        import uuid
+        await db.subscriptions.insert_one({
+            "id": str(uuid.uuid4()), "userId": user_id,
+            "planId": body.planId, "status": "ACTIVE",
+            "currentPeriodStart": utcnow_iso(),
+            "currentPeriodEnd": (datetime.now(timezone.utc)
+                                 + timedelta(days=30)).isoformat(),
+            "cancelAtPeriodEnd": False,
+            "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
+        })
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if user:
+        await mocks.send_email(user["email"], "plan-changed",
+                               f"You've been upgraded to {plan['name']}",
+                               f"<p>You're now on the {plan['name']} plan.</p>")
+    return ok({"updated": True})
+
+
+@router.put("/users/{user_id}/status",
+            dependencies=[Depends(get_admin_session)])
+async def change_status(user_id: str, body: StatusReq):
+    if body.status not in {"active", "suspended"}:
+        raise APIError("Invalid status", "INVALID", 400)
+    await get_db().users.update_one(
+        {"id": user_id},
+        {"$set": {"status": body.status, "updatedAt": utcnow_iso()}})
+    return ok({"updated": True})
+
+
+@router.post("/users/{user_id}/extend-trial",
+             dependencies=[Depends(get_admin_session)])
+async def extend_trial(user_id: str, body: TrialReq):
+    db = get_db()
+    sub = await db.subscriptions.find_one(
+        {"userId": user_id}, {"_id": 0}, sort=[("createdAt", -1)])
+    if not sub:
+        raise APIError("No subscription", "NOT_FOUND", 404)
+    current = sub.get("trialEndsAt")
+    base = (datetime.fromisoformat(current)
+            if current else datetime.now(timezone.utc))
+    new_end = (base + timedelta(days=body.days)).isoformat()
+    await db.subscriptions.update_one(
+        {"id": sub["id"]},
+        {"$set": {"trialEndsAt": new_end, "status": "TRIALING",
+                  "updatedAt": utcnow_iso()}})
+    return ok({"trialEndsAt": new_end})
+
+
+@router.post("/users/{user_id}/note",
+             dependencies=[Depends(get_admin_session)])
+async def add_note(user_id: str, body: NoteReq):
+    import uuid
+    await get_db().admin_notes.insert_one({
+        "id": str(uuid.uuid4()), "userId": user_id,
+        "note": body.note, "createdAt": utcnow_iso(),
+    })
+    return ok({"saved": True})
+
+
+@router.get("/users/{user_id}/activity",
+            dependencies=[Depends(get_admin_session)])
+async def user_activity(user_id: str, page: int = 1, limit: int = 20):
+    db = get_db()
+    events = []
+    async for a in db.articles.find(
+            {"userId": user_id}, {"_id": 0, "content": 0}).sort(
+            "createdAt", -1).limit(50):
+        events.append({"type": "article_created", "at": a["createdAt"],
+                       "ref": a["id"], "title": a.get("title")})
+    async for s in db.social_posts.find(
+            {"userId": user_id}, {"_id": 0}).sort("createdAt", -1).limit(50):
+        events.append({"type": "social_post", "at": s["createdAt"],
+                       "ref": s["id"], "platform": s.get("platform")})
+    events.sort(key=lambda x: x["at"], reverse=True)
+    start = (page - 1) * limit
+    return ok(events[start:start + limit],
+              pagination=paginate([], len(events), page, limit))

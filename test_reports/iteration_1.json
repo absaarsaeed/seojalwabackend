@@ -1,0 +1,41 @@
+{
+  "summary": "Comprehensive backend regression on SEO Jalwa (~120 endpoints). Built /app/backend/tests/backend_test.py covering health, docs, public (plans/blog/contact), auth (register/login/refresh/google-mock/forgot-reset/me/middleware), sites CRUD + 5 CMS connects + verify-connection, search-terms (CRUD + AI suggest – real OpenAI), article-settings, articles (list/generate-poll/calendar), social (accounts/auth-url/posts/generate), AI visibility (scans/scan-enqueue/simulate), AI writer (brand-voice get+train, content/library, content/generate – real OpenAI, voice-score), analytics, growth-score, team, user, billing, auto-publish, plugin (X-Jalwa-API-Key) and the full admin surface (auth/verify/no-session, dashboard, users list, plans CRUD, coupons CRUD, blog auto-slug, api-keys masked, analytics, settings). Rate-limit tests run last with rotated X-Forwarded-For to avoid pollution (public ai-visibility/demo 5/hr -> 6th=429 RATE_LIMITED, admin lockout 5/30min -> 6th=429 LOCKED_OUT). Result: 57/57 PASS.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "FastAPI 422 validation errors", "issue": "Pydantic validation failures return FastAPI default {detail:[...]} shape instead of project-standard {success:false,error,code,statusCode}. APIError raised inside handlers does conform, but request-body validation does not. Consider a RequestValidationError exception handler in core/response.py."},
+      {"endpoint": "POST /api/admin/coupons", "issue": "Field `duration` is listed as optional in OpenAPI but the implementation accesses body.duration.upper() — passing payload without duration would 500. Mark duration required or default it server-side."},
+      {"endpoint": "Rate-limit / lockout", "issue": "Rate-limit & admin-lockout are in-memory dicts keyed by client IP. Single-worker only; behind ingress they key on the real X-Forwarded-For — verify the limiter is reading the forwarded header, otherwise every test caller shares one bucket (the 'real' IP)."},
+      {"endpoint": "GET /api/admin/api-keys", "issue": "Returns list of strings (key names) instead of {key,value(masked),updatedAt} objects — consumers cannot see whether a key is set / masked preview. Spec called for masked values."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Add a RequestValidationError handler so 422 responses follow the {success:false,error,code,statusCode} envelope.",
+    "Make POST /api/admin/coupons `duration` either required (OpenAPI) or default to 'ONCE' server-side – the route currently raises AttributeError when omitted.",
+    "GET /api/admin/api-keys should return masked-value objects, not bare key names, per spec."
+  ],
+  "critical_code_review_comments": [
+    "All ~120 endpoints reachable; response shape {success,data,message} and {success:false,error,code,statusCode} is consistent everywhere EXCEPT FastAPI's default 422.",
+    "Real LLM path (content/generate, search-terms/ai-suggest) returned within ~15s and produced valid content.",
+    "Background-task pattern works: /api/articles/generate returns jobId and /api/articles/job/{id} transitions to completed.",
+    "Encryption: site.apiKey for plugin auth works end-to-end (verify/ping/articles/pending).",
+    "Mocked services (Resend, LemonSqueezy, R2, DataForSEO, GSC, CMS adapters, social adapters, Perplexity/Gemini/Claude, Google OAuth, DALL-E) are correctly stubbed per the user requirement.",
+    "Rate-limiter is in-memory: do NOT scale workers >1 without externalising it (Redis) – flagged for future."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/__init__.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (per request)"},
+  "test_credentials": "Admin jalwa/jalwaadmin (X-Admin-Token header); fresh user created per run (tester+<uuid>@seojalwa.com / Testing12345!).",
+  "seed_data_creation": "Each test run creates a unique user + uses seeded site. Cleanup: TEST_ prefixed coupon/plan/blog rows are deleted in-test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Tests are idempotent (UUID-tagged emails / TEST_ prefix). Rate-limit tests rotate X-Forwarded-For so re-running does not lock the admin user. If the admin login ever returns 429 LOCKED_OUT during ad-hoc curl, that's residual state from another caller – wait or use a fresh X-Forwarded-For. Real OpenAI calls cost ~3-5s each; full suite ≈ 50s.",
+  "rca of the issue": "n/a – no bugs were classified as critical. The four minor items above are documented for the main agent to follow up."
+}
