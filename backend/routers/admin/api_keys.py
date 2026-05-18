@@ -40,7 +40,12 @@ async def list_keys():
             "testStatus": r.get("testStatus", "UNTESTED"),
             "updatedAt": r.get("updatedAt"),
         })
-    return ok({"supportedKeys": SUPPORTED_KEYS, "configured": out})
+    return ok(out, message=f"{len(out)} keys configured")
+
+
+@router.get("/supported")
+async def supported_keys():
+    return ok(SUPPORTED_KEYS)
 
 
 @router.post("")

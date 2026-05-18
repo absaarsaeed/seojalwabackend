@@ -42,7 +42,7 @@ async def create_coupon(body: CouponReq):
     doc = {
         "id": str(uuid.uuid4()), "code": body.code.upper(),
         "type": body.type.upper(), "value": body.value,
-        "duration": body.duration.upper(),
+        "duration": (body.duration or "ONCE").upper(),
         "maxUses": body.maxUses, "usedCount": 0,
         "expiresAt": body.expiresAt, "isActive": True,
         "createdAt": utcnow_iso(),

@@ -42,6 +42,24 @@ async def generic_error_handler(request: Request, exc: Exception):
     return error(str(exc) or "Internal Server Error", "INTERNAL_ERROR", 500)
 
 
+async def validation_error_handler(request: Request, exc):
+    """Return Pydantic / FastAPI validation errors in our envelope."""
+    try:
+        errors = exc.errors()
+    except Exception:
+        errors = [{"msg": str(exc)}]
+    return JSONResponse(
+        status_code=422,
+        content={
+            "success": False,
+            "error": "Validation failed",
+            "code": "VALIDATION_ERROR",
+            "statusCode": 422,
+            "details": errors,
+        },
+    )
+
+
 def paginate(items: list, total: int, page: int, limit: int) -> dict:
     total_pages = (total + limit - 1) // limit if limit else 1
     return {"total": total, "page": page, "limit": limit, "totalPages": total_pages}

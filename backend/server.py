@@ -10,11 +10,13 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from core.database import close_db, get_db  # noqa: E402
 from core.response import (APIError, api_error_handler,  # noqa: E402
-                            generic_error_handler, http_error_handler, ok)
+                            generic_error_handler, http_error_handler, ok,
+                            validation_error_handler)
 from core.scheduler import start_scheduler, stop_scheduler  # noqa: E402
 from services.api_keys import refresh_cache, schedule_cache_refresh  # noqa: E402
 
@@ -85,6 +87,7 @@ app.add_middleware(
 
 # Error handlers
 app.add_exception_handler(APIError, api_error_handler)
+app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(HTTPException, http_error_handler)
 app.add_exception_handler(Exception, generic_error_handler)
 
