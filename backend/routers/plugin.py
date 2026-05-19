@@ -88,3 +88,31 @@ async def track(body: TrackReq,
         "at": utcnow_iso(),
     })
     return ok({"tracked": True})
+
+
+# ---------------------------------------------------------------- version
+@router.get("/version")
+async def plugin_version():
+    """Public — used by the WordPress plugin's update-check transient."""
+    db = get_db()
+    rec = await db.settings.find_one({"id": "plugin_version"}, {"_id": 0})
+    if not rec:
+        rec = {
+            "id": "plugin_version",
+            "version": "1.0.0",
+            "min_wp_version": "5.0",
+            "min_php_version": "7.4",
+            "changelog": "Initial release",
+            "download_url": "https://seojalwa.com/plugin/seojalwa-latest.zip",
+            "released_at": "2026-05-19",
+        }
+        await db.settings.insert_one(dict(rec))
+    rec.pop("_id", None)
+    return ok({
+        "version": rec.get("version", "1.0.0"),
+        "min_wp_version": rec.get("min_wp_version", "5.0"),
+        "min_php_version": rec.get("min_php_version", "7.4"),
+        "changelog": rec.get("changelog", ""),
+        "download_url": rec.get("download_url", ""),
+        "released_at": rec.get("released_at", ""),
+    })

@@ -1,0 +1,21 @@
+.seojalwa-wrap { max-width: 860px; }
+.seojalwa-banner {
+    padding: 14px 18px;
+    margin: 14px 0 24px;
+    border-radius: 8px;
+    border-left: 4px solid #16a34a;
+    background: #ecfdf5;
+    color: #064e3b;
+}
+.seojalwa-banner--info {
+    background: #eff6ff;
+    border-left-color: #2563eb;
+    color: #1e3a8a;
+}
+.seojalwa-banner strong { font-size: 15px; display: block; margin-bottom: 4px; }
+.seojalwa-banner p { margin: 4px 0; }
+.seojalwa-wrap .form-table th { width: 220px; }
+.seojalwa-wrap .button-primary { margin-left: 6px; }
+#seojalwa-message.is-error { color: #b91c1c; }
+#seojalwa-message.is-success { color: #047857; }
+#seojalwa-spinner.is-active { visibility: visible; }
