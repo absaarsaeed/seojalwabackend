@@ -111,11 +111,19 @@ async def list_sites(user=Depends(get_current_user)):
 
 @router.post("")
 async def create_site(body: SiteCreate, user=Depends(get_current_user)):
+    if not body.name.strip():
+        raise APIError("Site name is required", "VALIDATION_ERROR", 400)
+    if not body.url.strip():
+        raise APIError("Site URL is required", "VALIDATION_ERROR", 400)
     if body.platform not in PLATFORMS:
         raise APIError("Invalid platform", "INVALID_PLATFORM", 400)
+    cleaned_url = clean_website_url(body.url)
+    if not cleaned_url:
+        raise APIError("Invalid URL format", "INVALID_URL", 400)
     site = {
         "id": str(uuid.uuid4()), "userId": user["id"],
-        "name": body.name, "url": body.url, "platform": body.platform,
+        "name": body.name.strip(), "url": cleaned_url,
+        "platform": body.platform,
         "isActive": True, "apiKey": generate_site_api_key(),
         "wordpressConnected": False,
         "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
@@ -190,8 +198,36 @@ async def verify_connection(site_id: str, user=Depends(get_current_user)):
                                    {"_id": 0})
     if not site:
         raise APIError("Site not found", "NOT_FOUND", 404)
-    return ok({"connected": bool(site.get("wordpressConnected")),
-               "lastSync": site.get("lastSync")})
+
+    # Probe the WP plugin status endpoint
+    import httpx
+    probe_url = f"{site['url'].rstrip('/')}/wp-json/seojalwa/v1/status"
+    connected = False
+    detail = ""
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+            resp = await c.get(probe_url)
+            if resp.status_code == 200:
+                data = resp.json() if resp.headers.get(
+                    "content-type", "").startswith("application/json") else {}
+                connected = bool(data.get("connected"))
+                detail = data.get("message", "")
+    except Exception as e:
+        detail = str(e)[:120]
+
+    if connected:
+        await db.sites.update_one(
+            {"id": site_id},
+            {"$set": {"wordpressConnected": True,
+                      "lastSync": utcnow_iso(),
+                      "updatedAt": utcnow_iso()}})
+        return ok({"connected": True,
+                   "message": "WordPress connected",
+                   "lastSync": utcnow_iso()})
+    return ok({"connected": False,
+               "message": ("Plugin not detected. Make sure plugin is "
+                           "installed and API key is entered."),
+               "detail": detail})
 
 
 async def _connect_store(site_id: str, user_id: str, fields: dict) -> dict:

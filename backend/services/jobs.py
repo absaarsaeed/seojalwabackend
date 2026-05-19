@@ -39,13 +39,19 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
     try:
         settings = await db.article_settings.find_one(
             {"siteId": site_id}, {"_id": 0}) or {}
+        # 20 — brand voice lookup
+        await _update_job(job_id, progress=20)
         brand_voice = await db.brand_voices.find_one(
             {"siteId": site_id, "isActive": True}, {"_id": 0})
         length_map = {"WORDS_1000": 1000, "WORDS_2000": 2000,
                       "WORDS_3000": 3000, "WORDS_5000": 5000}
         length = length_map.get(settings.get("articleLength", "WORDS_2000"), 2000)
 
+        # 30 — keyword research stage marker
         await _update_job(job_id, progress=30)
+
+        # 50 — generating article content
+        await _update_job(job_id, progress=50)
         gen = await llm.generate_article(
             topic=search_term, keyword=search_term,
             brand_voice=brand_voice, length_words=length,
@@ -60,10 +66,11 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
         # Real DALL-E 3 hero (if enabled) + re-upload to R2
         image_url = None
         if settings.get("includeHeroImages", True):
-            await _update_job(job_id, progress=70)
+            await _update_job(job_id, progress=70)  # generating hero image
             openai_img = await llm.generate_hero_image(
                 gen["title"], settings.get("imageryPrompt", ""))
             if openai_img:
+                await _update_job(job_id, progress=85)  # uploading to storage
                 from services import storage as _storage
                 image_url = await _storage.download_to_r2(
                     openai_img, f"articles/{article_id}/hero.jpg",
@@ -97,6 +104,7 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
         if settings.get("autoPublish", True):
             site = await db.sites.find_one({"id": site_id}, {"_id": 0})
             if site and site.get("wordpressConnected"):
+                await _update_job(job_id, progress=95)  # publishing to WP
                 # Real WordPress publish via REST API
                 from services import wordpress as _wp, email as _em
                 article = await db.articles.find_one({"id": article_id},

@@ -34,10 +34,36 @@ async def list_terms(siteId: str, user=Depends(get_current_user)):
 @router.post("")
 async def add_terms(body: CreateReq, user=Depends(get_current_user)):
     db = get_db()
-    research = await mocks.keyword_research(body.terms)
+    site = await db.sites.find_one(
+        {"id": body.siteId, "userId": user["id"], "deleted": {"$ne": True}},
+        {"_id": 0})
+    if not site:
+        raise APIError("Site not found", "NOT_FOUND", 404)
+
+    # Trim + drop empties + dedupe within the request (case-insensitive)
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for raw in body.terms:
+        t = (raw or "").strip()
+        if not t:
+            continue
+        k = t.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        cleaned.append(t)
+
+    # Skip terms that already exist for this site (case-insensitive)
+    existing = await db.search_terms.find(
+        {"siteId": body.siteId, "userId": user["id"]},
+        {"_id": 0, "term": 1}).to_list(2000)
+    existing_keys = {(e.get("term") or "").lower() for e in existing}
+    fresh = [t for t in cleaned if t.lower() not in existing_keys]
+
+    research = await mocks.keyword_research(fresh) if fresh else []
     research_map = {r["term"]: r for r in research}
     docs = []
-    for t in body.terms:
+    for t in fresh:
         r = research_map.get(t, {})
         docs.append({
             "id": str(uuid.uuid4()), "siteId": body.siteId,

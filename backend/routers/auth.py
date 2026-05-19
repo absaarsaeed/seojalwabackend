@@ -54,7 +54,7 @@ def _public_user(user: dict) -> dict:
     return {k: v for k, v in user.items() if k not in {"password", "_id"}}
 
 
-@router.post("/register", dependencies=[Depends(rate_limit("auth", 10, 60))])
+@router.post("/register", dependencies=[Depends(rate_limit("auth_register", 5, 3600))])
 async def register(body: RegisterReq):
     db = get_db()
     existing = await db.users.find_one({"email": body.email.lower()})
@@ -70,7 +70,8 @@ async def register(body: RegisterReq):
         "fullName": body.fullName,
         "websiteUrl": cleaned_url,
         "profilePhoto": None, "googleId": None,
-        "emailVerified": False, "emailVerifyToken": verify_token,
+        # FIX 9: email verification disabled for now — auto-verified on signup
+        "emailVerified": True, "emailVerifyToken": verify_token,
         "resetPasswordToken": None, "resetPasswordExpiry": None,
         "notifications": {"emailDigest": True, "weeklyScore": True,
                           "aiAlerts": True, "billingAlerts": True},
@@ -100,7 +101,7 @@ async def register(body: RegisterReq):
     }, "Registration successful")
 
 
-@router.post("/login", dependencies=[Depends(rate_limit("auth", 10, 60))])
+@router.post("/login", dependencies=[Depends(rate_limit("auth_login", 10, 900))])
 async def login(body: LoginReq):
     db = get_db()
     user = await db.users.find_one({"email": body.email.lower(),
@@ -166,9 +167,27 @@ async def verify_email(token: str):
     return ok({"verified": True}, "Email verified")
 
 
-@router.post("/forgot-password",
-             dependencies=[Depends(rate_limit("auth", 10, 60))])
+_forgot_password_attempts: dict[str, list[float]] = {}
+
+
+def _forgot_password_rate_limit(email_addr: str) -> None:
+    """3 forgot-password requests per email per hour."""
+    import time as _time
+    now = _time.time()
+    bucket = [t for t in _forgot_password_attempts.get(email_addr, [])
+              if t > now - 3600]
+    if len(bucket) >= 3:
+        retry = int(bucket[0] + 3600 - now) + 1
+        raise APIError(
+            f"Too many password reset requests. Try again in {retry}s.",
+            code="RATE_LIMITED", status_code=429)
+    bucket.append(now)
+    _forgot_password_attempts[email_addr] = bucket
+
+
+@router.post("/forgot-password")
 async def forgot_password(body: ForgotReq):
+    _forgot_password_rate_limit(body.email.lower())
     db = get_db()
     user = await db.users.find_one({"email": body.email.lower()})
     if user:
@@ -181,10 +200,11 @@ async def forgot_password(body: ForgotReq):
         await email.password_reset(
             user_name=user.get("fullName", "there"),
             to=body.email,
-            reset_url=f"{os.environ.get('FRONTEND_URL', '')}/reset-password?token={token}",
+            reset_url=f"{os.environ.get('FRONTEND_URL', '')}/reset-password/{token}",
         )
     # Always return success to avoid email enumeration
-    return ok({"sent": True}, "If the account exists, an email has been sent")
+    return ok({"sent": True},
+              "If this email exists, you will receive a reset link")
 
 
 @router.post("/reset-password")
@@ -192,10 +212,10 @@ async def reset_password(body: ResetReq):
     db = get_db()
     user = await db.users.find_one({"resetPasswordToken": body.token})
     if not user:
-        raise APIError("Invalid token", "INVALID_TOKEN", 400)
+        raise APIError("Invalid or expired token", "TOKEN_EXPIRED", 401)
     expiry = user.get("resetPasswordExpiry")
     if expiry and datetime.fromisoformat(expiry) < datetime.now(timezone.utc):
-        raise APIError("Token expired", "TOKEN_EXPIRED", 400)
+        raise APIError("Token expired", "TOKEN_EXPIRED", 401)
     await db.users.update_one(
         {"id": user["id"]},
         {"$set": {"password": hash_password(body.newPassword),
@@ -211,6 +231,13 @@ async def me(user=Depends(get_current_user)):
     subscription = await db.subscriptions.find_one(
         {"userId": user["id"], "status": {"$in": ["ACTIVE", "TRIALING"]}},
         {"_id": 0})
+    # Enrich subscription with the populated plan object (FIX 3)
+    if subscription and subscription.get("planId"):
+        plan = await db.plans.find_one(
+            {"id": subscription["planId"]}, {"_id": 0})
+        if plan:
+            subscription["plan"] = plan
+
     sites = await db.sites.find(
         {"userId": user["id"], "deleted": {"$ne": True}},
         {"_id": 0}).to_list(100)

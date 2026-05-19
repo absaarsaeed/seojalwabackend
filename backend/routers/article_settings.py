@@ -18,11 +18,11 @@ DEFAULTS = {
     "includeInfographics": True, "includeKeyTakeaways": True,
     "includeTableOfContents": True, "addExternalLinks": True,
     "articleLength": "WORDS_2000", "publishingFrequency": 5,
-    "writingLanguage": "English", "writingInstructions": None,
-    "websiteTitle": None, "websiteDescription": None,
-    "targetCountry": "Worldwide", "targetCity": None,
-    "whatYouSell": None, "whatYouDontSell": None,
-    "imageryPrompt": None,
+    "writingLanguage": "English", "writingInstructions": "",
+    "websiteTitle": "", "websiteDescription": "",
+    "targetCountry": "Worldwide", "targetCity": "",
+    "whatYouSell": "", "whatYouDontSell": "",
+    "imageryPrompt": "",
 }
 
 

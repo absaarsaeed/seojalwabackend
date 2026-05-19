@@ -8,6 +8,7 @@ from core.database import get_db
 from core.dependencies import get_current_user
 from core.response import APIError, ok
 from core.security import hash_password, utcnow_iso, verify_password
+from routers.sites import clean_website_url
 
 router = APIRouter(prefix="/user", tags=["user"])
 
@@ -36,13 +37,40 @@ class DeleteReq(BaseModel):
 
 @router.put("/profile")
 async def update_profile(body: ProfileReq, user=Depends(get_current_user)):
-    upd = {k: v for k, v in body.model_dump(exclude_none=True).items()
-           if k != "websiteUrl"}
-    upd["updatedAt"] = utcnow_iso()
+    db = get_db()
+    upd: dict = {}
+
+    if body.fullName is not None:
+        upd["fullName"] = body.fullName
+
+    if body.email is not None and body.email.lower() != user.get("email"):
+        new_email = body.email.lower()
+        taken = await db.users.find_one(
+            {"email": new_email, "id": {"$ne": user["id"]}})
+        if taken:
+            raise APIError("Email already in use", "EMAIL_TAKEN", 409)
+        upd["email"] = new_email
+        # FIX 9: keep emailVerified=True on email change (verification disabled)
+        upd["emailVerified"] = True
+
+    old_url = (user.get("websiteUrl") or "").strip()
+    if body.websiteUrl is not None:
+        new_url = clean_website_url(body.websiteUrl)
+        upd["websiteUrl"] = new_url
+        if new_url and new_url != old_url:
+            # Propagate change to the matching existing Site, if any
+            await db.sites.update_one(
+                {"userId": user["id"], "url": old_url,
+                 "deleted": {"$ne": True}},
+                {"$set": {"url": new_url, "updatedAt": utcnow_iso()}})
+
     if upd:
-        await get_db().users.update_one(
-            {"id": user["id"]}, {"$set": upd})
-    return ok({"updated": True}, "Profile updated")
+        upd["updatedAt"] = utcnow_iso()
+        await db.users.update_one({"id": user["id"]}, {"$set": upd})
+
+    fresh = await db.users.find_one(
+        {"id": user["id"]}, {"_id": 0, "password": 0})
+    return ok({"user": fresh, "updated": True}, "Profile updated")
 
 
 @router.put("/password")
@@ -50,13 +78,13 @@ async def update_password(body: PasswordReq, user=Depends(get_current_user)):
     full = await get_db().users.find_one({"id": user["id"]})
     if not full or not verify_password(body.currentPassword,
                                        full.get("password", "")):
-        raise APIError("Current password incorrect",
+        raise APIError("Current password is incorrect",
                        "INVALID_CREDENTIALS", 401)
     await get_db().users.update_one(
         {"id": user["id"]},
         {"$set": {"password": hash_password(body.newPassword),
                   "updatedAt": utcnow_iso()}})
-    return ok({"updated": True})
+    return ok({"updated": True}, "Password updated")
 
 
 @router.put("/notifications")
