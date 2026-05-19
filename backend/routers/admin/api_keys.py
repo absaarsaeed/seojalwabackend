@@ -21,7 +21,39 @@ router = APIRouter(prefix="/admin/api-keys", tags=["admin-api-keys"],
 
 
 class SaveBody(BaseModel):
-    fields: dict[str, Any]
+    """Accepts BOTH request shapes for backward compatibility:
+
+    SHAPE 1 (legacy): {"value": "sk-proj-..."}
+        - Mapped to the first required catalogue field (typically `api_key`).
+    SHAPE 2 (current): {"fields": {"api_key": "sk-proj-...", ...}}
+        - Persisted as-is (dict of fields).
+    """
+    fields: dict[str, Any] | None = None
+    value: str | None = None
+
+    class Config:
+        extra = "allow"
+
+
+def _resolve_fields(key: str, body: SaveBody) -> dict[str, Any]:
+    """Normalise either request shape into a {field_name: value} dict."""
+    # SHAPE 2: explicit fields dict wins
+    if body.fields is not None:
+        return body.fields or {}
+
+    # SHAPE 1: single value → map to primary field of the catalogue entry
+    if body.value is not None:
+        entry = CATALOG_BY_KEY.get(key.lower())
+        if not entry or not entry.get("fields"):
+            return {"api_key": body.value}
+        # Prefer the first required field; fall back to the first field.
+        primary = next(
+            (f["name"] for f in entry["fields"] if f.get("required")),
+            entry["fields"][0]["name"],
+        )
+        return {primary: body.value}
+
+    return {}
 
 
 # ============================================================ LIST
@@ -58,7 +90,11 @@ async def get_one(key: str):
 async def save(key: str, body: SaveBody):
     if key.lower() not in CATALOG_BY_KEY:
         raise APIError("Unknown service", "NOT_FOUND", 404)
-    rec = await config_service.set_fields(key.lower(), body.fields or {})
+    fields_to_save = _resolve_fields(key.lower(), body)
+    if not fields_to_save:
+        raise APIError("Request must include either 'fields' or 'value'",
+                       "VALIDATION_ERROR", 422)
+    rec = await config_service.set_fields(key.lower(), fields_to_save)
     # Compose response with masked values for confirmation
     fresh = await config_service.get_fields(key.lower())
     view = build_admin_view(key.lower(), rec,  fresh)
