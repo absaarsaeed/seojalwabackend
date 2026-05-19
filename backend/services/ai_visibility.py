@@ -19,7 +19,9 @@ logger = logging.getLogger("jalwa.ai_visibility")
 
 # ---------------------------------------------------------------- Perplexity
 async def _query_perplexity(query: str) -> str:
-    api_key = os.environ.get("PERPLEXITY_API_KEY")
+    from services.config import config_service
+    api_key = (await config_service.get_value("perplexity", "api_key")
+               or os.environ.get("PERPLEXITY_API_KEY", ""))
     if not api_key:
         return ""
     try:
@@ -42,7 +44,9 @@ async def _query_perplexity(query: str) -> str:
 
 # -------------------------------------------------------------------- Gemini
 async def _query_gemini(query: str) -> str:
-    api_key = os.environ.get("GEMINI_API_KEY")
+    from services.config import config_service
+    api_key = (await config_service.get_value("gemini", "api_key")
+               or os.environ.get("GEMINI_API_KEY", ""))
     if not api_key:
         return ""
     try:
@@ -58,7 +62,9 @@ async def _query_gemini(query: str) -> str:
 
 # -------------------------------------------------------------------- Claude
 async def _query_claude(query: str) -> str:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    from services.config import config_service
+    api_key = (await config_service.get_value("anthropic", "api_key")
+               or os.environ.get("ANTHROPIC_API_KEY", ""))
     if not api_key:
         return ""
     try:
@@ -254,21 +260,30 @@ async def run_scan(site: dict) -> dict:
 
 # ----------------------------------- service test (admin api-keys/test)
 async def test_perplexity() -> dict:
-    if not os.environ.get("PERPLEXITY_API_KEY"):
+    from services.config import config_service
+    api_key = (await config_service.get_value("perplexity", "api_key")
+               or os.environ.get("PERPLEXITY_API_KEY", ""))
+    if not api_key:
         return {"success": False, "message": "PERPLEXITY_API_KEY not configured"}
     t = await _query_perplexity("Say READY")
     return {"success": bool(t), "message": (t or "no response")[:140]}
 
 
 async def test_gemini() -> dict:
-    if not os.environ.get("GEMINI_API_KEY"):
+    from services.config import config_service
+    api_key = (await config_service.get_value("gemini", "api_key")
+               or os.environ.get("GEMINI_API_KEY", ""))
+    if not api_key:
         return {"success": False, "message": "GEMINI_API_KEY not configured"}
     t = await _query_gemini("Say READY")
     return {"success": bool(t), "message": (t or "no response")[:140]}
 
 
 async def test_anthropic() -> dict:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    from services.config import config_service
+    api_key = (await config_service.get_value("anthropic", "api_key")
+               or os.environ.get("ANTHROPIC_API_KEY", ""))
+    if not api_key:
         return {"success": False, "message": "ANTHROPIC_API_KEY not configured"}
     t = await _query_claude("Say READY")
     return {"success": bool(t), "message": (t or "no response")[:140]}

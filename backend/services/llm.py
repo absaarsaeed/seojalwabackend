@@ -13,10 +13,16 @@ logger = logging.getLogger("jalwa.llm")
 
 
 def _api_key() -> str:
-    key = os.environ.get("OPENAI_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")
-    if not key:
-        raise RuntimeError("OPENAI_API_KEY missing in environment")
-    return key
+    """Backward-compat sync path (used by the rare sync call site)."""
+    return (os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("EMERGENT_LLM_KEY") or "")
+
+
+async def _api_key_async() -> str:
+    """Preferred async path — checks DB first via ConfigService."""
+    from services.config import config_service
+    key = await config_service.get_value("openai", "api_key")
+    return key or _api_key()
 
 
 async def chat_completion(
@@ -28,7 +34,10 @@ async def chat_completion(
 ) -> str:
     """Single-turn completion using OpenAI."""
     try:
-        client = AsyncOpenAI(api_key=_api_key())
+        key = await _api_key_async()
+        if not key:
+            raise RuntimeError("OPENAI_API_KEY missing")
+        client = AsyncOpenAI(api_key=key)
         response = await client.chat.completions.create(
             model=model,
             messages=[
@@ -224,7 +233,8 @@ async def generate_hero_image(title: str, imagery_prompt: str = "") -> str | Non
     )
     try:
         from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=_api_key())
+        key = await _api_key_async()
+        client = AsyncOpenAI(api_key=key)
         resp = await client.images.generate(
             model="dall-e-3", prompt=prompt,
             size="1792x1024", quality="standard", n=1,

@@ -88,7 +88,7 @@ async def sync(body: SyncReq, user=Depends(get_current_user)):
 async def gsc_connect(body: GscConnectReq, user=Depends(get_current_user)):
     """Backward-compat: accept code in POST body (old flow)."""
     from services import gsc as _gsc
-    tokens = _gsc.exchange_code(body.code) or {}
+    tokens = (await _gsc.exchange_code(body.code)) or {}
     from core.encryption import encrypt
     await get_db().users.update_one(
         {"id": user["id"]},
@@ -104,7 +104,7 @@ async def gsc_authorize(user=Depends(get_current_user)):
     """Step 1 — return the Google authorize URL with state = userId."""
     from services import gsc as _gsc
     state = user["id"]
-    url = _gsc.build_authorize_url(state)
+    url = await _gsc.build_authorize_url(state)
     if not url:
         raise APIError("Google OAuth not configured", "GSC_NOT_CONFIGURED",
                        400)
@@ -116,7 +116,7 @@ async def gsc_callback(code: str, state: str):
     """Step 2 — Google redirects here with ?code & ?state=userId."""
     from services import gsc as _gsc
     from core.encryption import encrypt
-    tokens = _gsc.exchange_code(code) or {}
+    tokens = (await _gsc.exchange_code(code)) or {}
     if not tokens.get("access_token"):
         raise APIError("Token exchange failed", "GSC_EXCHANGE_FAILED", 400)
     await get_db().users.update_one(

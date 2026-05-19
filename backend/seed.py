@@ -10,7 +10,7 @@ load_dotenv(Path(__file__).parent / ".env")
 
 from core.database import get_db  # noqa: E402
 from core.security import hash_password, utcnow_iso  # noqa: E402
-from services.api_keys import SUPPORTED_KEYS  # noqa: E402
+from services.api_catalog import CATALOG  # noqa: E402
 
 
 DEFAULT_PLANS = [
@@ -67,12 +67,13 @@ async def run_seed():
             "createdAt": utcnow_iso(),
         })
 
-    # Default API config rows (empty values, inactive)
-    for key in SUPPORTED_KEYS:
-        existing = await db.api_configs.find_one({"key": key}, {"_id": 0})
+    # Default API config rows for every catalogue entry (empty values, inactive)
+    for entry in CATALOG:
+        existing = await db.api_configs.find_one({"key": entry["key"]},
+                                                  {"_id": 0})
         if not existing:
             await db.api_configs.insert_one({
-                "id": str(uuid.uuid4()), "key": key,
+                "id": str(uuid.uuid4()), "key": entry["key"],
                 "encryptedValue": "", "isActive": False,
                 "testStatus": "UNTESTED",
                 "updatedAt": utcnow_iso(),

@@ -30,7 +30,11 @@ async def send_email(
     template: str = "generic",
 ) -> dict:
     """Fire an email through SendGrid. Never raises."""
-    api_key = os.environ.get("SENDGRID_API_KEY")
+    from services.config import config_service
+    fields = await config_service.get_fields("sendgrid")
+    api_key = fields.get("api_key") or os.environ.get("SENDGRID_API_KEY")
+    from_email = (fields.get("from_email")
+                  or os.environ.get("SENDGRID_FROM_EMAIL", FROM_EMAIL))
     if not api_key:
         logger.info("[EMAIL skipped — SENDGRID_API_KEY not set] to=%s subject=%s",
                     to, subject)
@@ -38,7 +42,7 @@ async def send_email(
                 "template": template}
     try:
         message = Mail(
-            from_email=(FROM_EMAIL, FROM_NAME),
+            from_email=(from_email, FROM_NAME),
             to_emails=to,
             subject=subject,
             html_content=html,
@@ -196,9 +200,13 @@ Hi {user_name}, we couldn't charge your card for your latest SEO Jalwa invoice.<
 
 async def test_sendgrid() -> dict:
     """Used by admin api-keys/test."""
-    if not os.environ.get("SENDGRID_API_KEY"):
+    from services.config import config_service
+    fields = await config_service.get_fields("sendgrid")
+    if not (fields.get("api_key") or os.environ.get("SENDGRID_API_KEY")):
         return {"success": False, "message": "SENDGRID_API_KEY not configured"}
-    res = await send_email(FROM_EMAIL, "SEO Jalwa SendGrid health check",
-                           "<p>If you can read this, SendGrid is wired correctly.</p>",
-                           template="health-check")
+    res = await send_email(
+        fields.get("from_email") or FROM_EMAIL,
+        "SEO Jalwa SendGrid health check",
+        "<p>If you can read this, SendGrid is wired correctly.</p>",
+        template="health-check")
     return res

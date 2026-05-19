@@ -1,355 +1,343 @@
 # SEO Jalwa Backend — Phase 1 Completion Report
 
-Date: 2026-05-19
+Date: 2026-05-19 (revised after Phase 1.1 API-key management feature)
 
-This document inventories every change made in Phase 1, every endpoint that
-is now wired to a **real** integration, every endpoint that remains mocked
-(and why), the new env vars / pip packages, and any breaking changes the
-frontend builder needs to know about.
+This document inventories every change made in Phase 1 and Phase 1.1, every endpoint
+that is now wired to a **real** integration, every endpoint that remains
+mocked (and why), the new env vars / pip packages, and any breaking changes
+the frontend builder needs to know about.
 
 ---
 
-## 1 · Endpoints now fully implemented with real integrations
+## 0 · Phase 1.1 — Admin API Key Management (NEW)
+
+The website owner can now add, update, and test ALL third-party API keys
+from the admin panel at `domain.com/adminpanel/api-keys` **without ever
+touching Railway, `.env`, or any code**.
+
+### How it works
+- All keys are stored encrypted in MongoDB (`api_configs` collection).
+- **DB first, env fallback**: every service call resolves keys through
+  `services.config.config_service.get_value(...)` which checks the DB,
+  caches the decrypted value for 5 minutes, and only falls back to the
+  matching environment variable if no DB value is set.
+- Saving a key via the admin panel **invalidates the cache immediately**, so
+  changes take effect on the very next call (no restart, no deploy).
+- Display values are masked to last-4 (e.g. `••••••••••••1234`).
+
+### Service catalogue (13 services, 7 sections)
+
+| Section | Service key | Fields |
+|---|---|---|
+| AI Models | `openai` | api_key |
+| AI Models | `anthropic` | api_key |
+| AI Models | `gemini` | api_key |
+| AI Models | `perplexity` | api_key |
+| Email | `sendgrid` | api_key + from_email |
+| SEO & Keywords | `dataforseo` | login + password |
+| File Storage | `cloudflare_r2` | account_id + access_key_id + secret_access_key + bucket_name + public_url |
+| Google Services | `google_oauth` | client_id + client_secret |
+| Social Media OAuth Apps | `meta` | app_id + app_secret |
+| Social Media OAuth Apps | `linkedin` | client_id + client_secret |
+| Social Media OAuth Apps | `twitter` | client_id + client_secret |
+| Social Media OAuth Apps | `pinterest` | app_id + app_secret |
+| Payments | `lemonsqueezy` | api_key + store_id + webhook_secret |
+
+The full catalogue (label, description, step-by-step instructions, signup
+URL, notes) lives in `services/api_catalog.py` and is returned verbatim by
+the admin endpoints so the frontend doesn't have to duplicate any of it.
+
+### Admin endpoints
+
+| Method | Path | What it returns |
+|---|---|---|
+| `GET` | `/api/admin/api-keys` | List of all 13 services — each entry has `{key, label, section, description, fields:[{name,label,type,placeholder,required,value(masked),isSet}], status, last_tested, test_status, instructions:{title,steps[],url,note}}`. |
+| `GET` | `/api/admin/api-keys/supported` | Plain list of slug keys. |
+| `GET` | `/api/admin/api-keys/{key}` | Single service detail (same shape as above). |
+| `PUT` | `/api/admin/api-keys/{key}` | Body `{fields:{...}}` — encrypts and saves. Returns `{saved:true, key, masked_values, status}`. **Cache invalidated immediately.** |
+| `POST` | `/api/admin/api-keys/{key}/test` | Runs a real per-service connection test. Returns `{success, message, latency_ms, tested_at}`. Updates `lastTestedAt` + `testStatus` on the record. |
+
+### What each `/test` endpoint actually does (real calls)
+
+| Service | Test action |
+|---|---|
+| `openai` | `client.chat.completions.create(model='gpt-4o-mini', max_tokens=5)` ping |
+| `anthropic` | `client.messages.create(model='claude-3-haiku-20240307')` ping |
+| `gemini` | `model.generate_content_async('Say OK')` ping |
+| `perplexity` | POST `/chat/completions` with `llama-3.1-sonar-small-128k-online` |
+| `sendgrid` | GET `/v3/user/account` |
+| `cloudflare_r2` | `boto3.list_objects_v2(MaxKeys=1)` against the bucket |
+| `dataforseo` | POST `/v3/appendix/user_data` with Basic auth |
+| `lemonsqueezy` | GET `/v1/stores` |
+| `google_oauth`, `meta`, `linkedin`, `twitter`, `pinterest` | Presence-check only — OAuth apps cannot be auto-tested; the test confirms required fields are present and returns success with the message "will be validated when a user connects their account". |
+
+### Consumer refactor
+Every service now reads keys through `config_service` instead of
+`os.environ.get()` directly:
+
+- `services/llm.py` — `_api_key_async()` (DB → env)
+- `services/email.py` — `send_email` reads `sendgrid.api_key` and `sendgrid.from_email`
+- `services/storage.py` — `_r2_config()` builds the boto3 client per call
+- `services/ai_visibility.py` — `_query_perplexity / gemini / claude / test_*`
+- `services/gsc.py` — `_gsc_config()` powers `build_authorize_url` and `exchange_code`
+
+The env vars in `.env` still work as the **bootstrap fallback**. So on a
+fresh Railway deploy, you can populate values via env once and then move
+everything into the admin panel later without downtime.
+
+---
+
+## 1 · Endpoints fully implemented with real integrations
 
 ### Email (SendGrid)
-- `POST /api/auth/register` → fires real `welcome_email`
-- `POST /api/auth/forgot-password` → real `password_reset` email
-- `POST /api/team/invite` → real `team_invite` email
+- `POST /api/auth/register` → real `welcome_email`
+- `POST /api/auth/forgot-password` → real `password_reset`
+- `POST /api/team/invite` → real `team_invite`
 - `POST /api/admin/announcements` → real `announcement_email` to each recipient
-- Article generation job → real `article_published` email on successful CMS publish
-- New **Monday 08:05 UTC cron** → `weekly_digest` email for users with `notifications.weeklyScore = true`
-- Payment-failed webhook path → real `payment_failed` email
-
-All templates are HTML, branded with a shared shell, and live in
-`services/email.py`. They are **identical in content** to the previous Resend
-versions — only the sending provider changed.
+- Article generation job → real `article_published` after CMS publish
+- **Monday 08:05 UTC cron** → `weekly_digest`
+- Payment-failed webhook path → real `payment_failed`
 
 ### Article generation (OpenAI GPT-4o + DALL-E 3 + R2 + WordPress REST)
-- `POST /api/articles/generate` — kicks the queued job
-- `GET /api/articles/job/{jobId}` — poll job
+- `POST /api/articles/generate` (queued job)
+- Pipeline: load `ArticleSettings` + `BrandVoice` → call **GPT-4o** with
+  strict-JSON spec prompt → deterministic SEO score → optional **DALL-E 3**
+  hero image → re-upload to **Cloudflare R2** → auto-publish to
+  **WordPress REST** if connected → send `article_published` email.
+- Article record gains the new fields: `metaTitle`, `metaDescription`,
+  `excerpt`, `keyTakeaways[]`, `faqSchema[]`, `suggestedTags[]`,
+  `estimatedReadTime`, `seoScore` (deterministic 0-100).
 
-Job pipeline (`services/jobs.run_article_generation`):
-1. Loads `ArticleSettings` (length, language, instructions, toggles).
-2. Loads `BrandVoice.styleProfile` → injected into system prompt.
-3. Calls **GPT-4o** with the **exact spec prompt** asking for strict JSON:
-   `title, metaDescription, content (HTML), excerpt, keyTakeaways[],
-   faqSchema[], suggestedTags[], estimatedReadTime, wordCount`.
-4. Computes real **SEO score (0-100)** using the deterministic algorithm in
-   `services/llm.calculate_seo_score`:
-   - +15 keyword in title
-   - +10 keyword in first 100 words
-   - +10 meta description 150-160 chars
-   - +10 meta description has keyword
-   - +15 ≥ 4 H2 tags in content
-   - +10 word count ≥ 1500
-   - +10 FAQ present
-   - +10 key takeaways present
-   - +5 TOC present
-   - +5 read time set
-5. If `includeHeroImages = true` → real **DALL-E 3** call
-   (`size=1792x1024, quality=standard`) → image downloaded from OpenAI's URL
-   → re-uploaded to **Cloudflare R2** at
-   `articles/{articleId}/hero.jpg` → article saved with the R2 public URL.
-6. If `autoPublish = true` and the site has a WordPress application password
-   stored (`site.wordpressToken`) → real **WordPress REST** publish:
-   - Uploads featured media via `POST /wp-json/wp/v2/media`
-   - Creates post via `POST /wp-json/wp/v2/posts` with Yoast meta fields
-   - Stores `cmsPostId` and `cmsUrl` on the article
-   - Sends `article_published` email
-7. If WordPress is connected via the **plugin** (no token, just plugin polls
-   `/api/plugin/articles/pending`) → article is left `SCHEDULED` for the
-   plugin to pick up (unchanged behaviour).
+### DALL-E 3 hero images
+- `services/llm.generate_hero_image` with the spec prompt template (16:9,
+  no text, modern professional style).
+- Re-uploaded via `services/storage.download_to_r2`.
 
-### DALL-E 3 (`services/llm.generate_hero_image`)
-- Uses spec prompt template, returns OpenAI image URL.
-- Re-uploaded to R2 via `services/storage.download_to_r2`.
+### Cloudflare R2 (boto3 S3)
+- `upload_file`, `delete_file`, `get_signed_url`, `download_to_r2`,
+  `test_r2`.
 
-### Cloudflare R2 (`services/storage.py`)
-- `upload_file(bytes, key, content_type) → public_url`
-- `delete_file(key) → bool`
-- `get_signed_url(key, expires) → str`
-- `download_to_r2(source_url, key, content_type)` (for OpenAI image hand-off)
-- Uses boto3 S3 client with `endpoint=https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com`.
+### WordPress publishing
+- Real `wp-json/wp/v2/posts` create with Yoast meta + featured-media
+  upload via `wp-json/wp/v2/media`.
 
-### WordPress publishing (`services/wordpress.py`)
-- Real REST API publisher using Basic auth (WP application password
-  decrypted from `site.wordpressToken`).
-- Featured image upload + Yoast SEO meta fields.
+### AI Visibility 5-model scan
+- Real OpenAI (`gpt-4o-mini`), Perplexity (`llama-3.1-sonar-small-128k-online`),
+  Gemini (`1.5-flash`), Claude (`claude-3-haiku-20240307`). Copilot derived
+  ± variance (no public API).
+- 20 brand queries from GPT-4o, sentiment detection, weighted overall
+  (30/25/20/15/10), 5 GPT-4o recommendations.
 
-### AI Visibility scanning (`services/ai_visibility.py`)
-- `POST /api/ai-visibility/scan` triggers real 5-model scan.
-- Generates 20 brand queries via **GPT-4o**, splits 5 queries / model.
-- **ChatGPT** — OpenAI `gpt-4o-mini`
-- **Perplexity** — `llama-3.1-sonar-small-128k-online` over real API
-- **Gemini** — `gemini-1.5-flash` via `google-generativeai` SDK
-- **Claude** — `claude-3-haiku-20240307` via official `anthropic` SDK
-- **Copilot** — derived from the other four ± random variance (no public
-  API; TODO marker in code for Microsoft Copilot release).
-- Sentiment classification (POSITIVE / NEUTRAL / NEGATIVE / NOT_MENTIONED).
-- Weighted overall: ChatGPT 30 · Perplexity 25 · Gemini 20 · Claude 15 · Copilot 10.
-- Recommendations generated via GPT-4o returning JSON
-  `{action, difficulty, expectedImpact, category}`.
-- Triggers growth-score recalculation automatically.
+### Brand voice training
+- URL fetched + visible text extracted via BeautifulSoup.
+- GPT-4o profile (`tone, formality, playfulness, technicality,
+  sentenceLength, vocabulary, characteristicPhrases, thingsToAvoid,
+  writingPersona`) stored on `BrandVoice.styleProfile`.
+- Profile injected as system context in every future article + content
+  generation.
 
-### Brand Voice (`services/brand_voice.py`)
-- `POST /api/brand-voice/train` — if `websiteUrl` provided, the homepage is
-  fetched + stripped via BeautifulSoup, then sent to **GPT-4o** with the
-  exact spec prompt; returns the structured profile with keys
-  `tone, formality, playfulness, technicality, sentenceLength, vocabulary,
-  characteristicPhrases[], thingsToAvoid[], writingPersona`.
-- Profile stored on `BrandVoice.styleProfile` and used as system context in
-  every future `generate_article` and `content/generate` call.
-- `POST /api/content/voice-score` — real GPT-4o comparison returning
-  `{score, feedback}`.
+### Real Growth Score
+- AI 30 % · SEO 25 % · Social 25 % · Traffic 20 %. Triggered after every AI
+  scan + weekly cron + on demand.
 
-### Growth Score (`services/jobs.run_growth_score`)
-- Real calculation per spec: AI 30 % · SEO 25 % · Social 25 % · Traffic 20 %.
-- AI component reads the latest `ai_visibility_scans` record for the site.
-- SEO component compares published articles in the last 30 days against
-  `ArticleSettings.publishingFrequency * 4` target.
-- Social component compares published social posts vs 20 / month target.
-- Traffic component compares last 30 days clicks vs the preceding 30 days
-  from `Article.clicks` (populated by GSC sync).
-- Triggered after every AI visibility scan, weekly Monday cron, and on demand
-  via `POST /api/growth-score/calculate`.
+### Google Search Console (real OAuth 2.0)
+- **NEW** `GET /api/analytics/gsc/connect` → authorize URL
+- **NEW** `GET /api/analytics/gsc/callback` → token exchange + redirect
+- `POST /api/analytics/sync` → real `searchanalytics().query()` and
+  back-fills `Article.clicks/impressions/ctr/avgPosition`.
 
-### Google Search Console (`services/gsc.py`)
-- **NEW** `GET /api/analytics/gsc/connect` — returns Google authorize URL
-  with `state = userId` and `webmasters.readonly` scope.
-- **NEW** `GET /api/analytics/gsc/callback` — Google redirects here with
-  `?code & ?state`. Exchanges code, stores encrypted access + refresh
-  tokens on the user, redirects to
-  `${FRONTEND_URL}/dashboard/analytics?connected=true`.
-- `POST /api/analytics/gsc/connect` (legacy POST-body flow) kept for
-  backward compatibility.
-- `POST /api/analytics/sync` — real GSC `searchanalytics().query()` over
-  the last 30 days, dimensions `[query, page]`. Aggregates by page URL and
-  writes `clicks / impressions / ctr / avgPosition` onto matching Article
-  records by URL substring match. Persists a `gsc_snapshots` log entry
-  and updates `user.lastGscSync`.
-
-### Daily article cron (`services/jobs.cron_daily_article_generation`)
-- Runs **06:00 UTC** every day.
-- For each `ArticleSettings` with `autoPublish=true`:
-  - Skips sites with no active subscription / trial.
-  - Skips sites with no CMS connection.
-  - Skips sites that already have an article created today.
-  - Picks next `PENDING` SearchTerm, or asks GPT-4o for a fresh topic if
-    none remain.
-  - Creates an Article, enqueues a generation job, and runs the full
-    real-integration pipeline above (LLM → DALL-E → R2 → WP REST → email).
-
-### Admin API-key testing (`POST /api/admin/api-keys/{key}/test`)
-Each test now performs a **real call** to the live service when the key is
-configured:
-
-| key | what runs |
-|---|---|
-| `openai` | GPT-4o-mini ping; success only if not graceful-degradation |
-| `sendgrid` | Sends test email to `SENDGRID_FROM_EMAIL` |
-| `r2_*` | `list_objects_v2(MaxKeys=1)` against R2 bucket |
-| `perplexity` | Real chat completions ping |
-| `anthropic` | Real Claude `messages.create` ping |
-| `gemini` | Real `generate_content_async` ping |
-| `google_*` | Verifies OAuth client config is loaded |
-| `dataforseo`, `lemonsqueezy_*` | still MOCK (see below) |
-
-Response now includes `latency_ms`.
+### Daily article cron (06:00 UTC)
+- Skips inactive subscriptions, missing CMS connections, already-scheduled
+  sites; picks next PENDING SearchTerm or GPT-4o-suggested topic; runs the
+  full real pipeline above.
 
 ---
 
 ## 2 · Endpoints still mocked (and why)
 
-| Area | Why it's still mocked | Where the swap-in lives |
+| Area | Why | Where to replace |
 |---|---|---|
-| **LemonSqueezy checkout / webhook signature / refund** | No real API key yet; webhook signature verification stub always returns `true`. | `services/mocks.create_checkout`, `verify_lemonsqueezy_signature`, `lemonsqueezy_refund`. Real implementation needs `LEMONSQUEEZY_API_KEY` + `LEMONSQUEEZY_WEBHOOK_SECRET`. |
-| **DataForSEO keyword research** | No `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` yet. | `services/mocks.keyword_research`. Code is a single basic-auth HTTP POST when keys arrive. |
-| **Social publishers** (Instagram, Facebook, LinkedIn, Twitter, Pinterest, YouTube) | OAuth apps not registered yet on Meta/LinkedIn/X dev portals. | `services/mocks.publish_social_post`, `get_social_oauth_url`, `social_exchange_code`. |
-| **CMS publishers other than WordPress** (Webflow, Ghost, HubSpot, Wix, Notion) | Per Phase 1 scope: WordPress is real, the rest still use `mocks.publish_to_cms` with deterministic mock IDs. |
-| **Google OAuth login** (POST /api/auth/google) | No `GOOGLE_CLIENT_ID` wired for sign-in yet; GSC OAuth is wired but the login flow still uses `mocks.verify_google_token`. |
-| **Copilot in AI Visibility** | Microsoft has no public Copilot API; score is derived from the average of the other 4 models ± 10 variance. TODO marker in `services/ai_visibility._run_model_scan`. |
-
-All other Resend → SendGrid swaps are complete; **Resend is no longer used
-anywhere in the codebase** (the legacy `resend` row in `api_configs` from
-the old seed is harmless and can be ignored).
+| LemonSqueezy checkout/refund (the **webhook receiver** parses real payloads but the **signature verification stub** still returns true) | Awaiting real `LEMONSQUEEZY_API_KEY` + `LEMONSQUEEZY_WEBHOOK_SECRET` | `services/mocks.create_checkout`, `verify_lemonsqueezy_signature`, `lemonsqueezy_refund` |
+| DataForSEO keyword research | Awaiting credentials | `services/mocks.keyword_research` |
+| 5 non-WordPress CMS publishers (Webflow, Ghost, HubSpot, Wix, Notion) | Phase 1 only covered WordPress per spec | `services/mocks.publish_to_cms` |
+| 6 social publishers (IG, FB, LinkedIn, Twitter, Pinterest, YouTube) | OAuth apps still in review | `services/mocks.publish_social_post`, `get_social_oauth_url`, `social_exchange_code` |
+| Google OAuth login (`POST /api/auth/google`) | GSC OAuth IS real; login flow stub remains | `services/mocks.verify_google_token` |
+| Microsoft Copilot in AI Visibility | No public API | derived score in `services/ai_visibility._run_model_scan` |
 
 ---
 
-## 3 · New environment variables
+## 3 · Environment variables
 
-Add these to Railway → Variables (also documented in `.env.example` below):
+Every key listed here is **optional** because the admin panel can configure
+them at runtime. Set them in Railway only for initial bootstrap.
 
 ```
+# OpenAI (GPT-4o + DALL-E 3)
+OPENAI_API_KEY=
+
+# Anthropic / Gemini / Perplexity
+ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
+PERPLEXITY_API_KEY=
+
+# Email
 SENDGRID_API_KEY=
 SENDGRID_FROM_EMAIL=hello@seojalwa.com
 SENDGRID_FROM_NAME=SEO Jalwa
 
+# DataForSEO
+DATAFORSEO_LOGIN=
+DATAFORSEO_PASSWORD=
+
+# Cloudflare R2
 R2_ACCOUNT_ID=
 R2_ACCESS_KEY_ID=
 R2_SECRET_ACCESS_KEY=
 R2_BUCKET_NAME=seojalwa-assets
 R2_PUBLIC_URL=
 
+# Google OAuth (Search Console + YouTube)
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GOOGLE_REDIRECT_URI=https://api.seojalwa.com/api/analytics/gsc/callback
 
-PERPLEXITY_API_KEY=
-GEMINI_API_KEY=
-ANTHROPIC_API_KEY=
+# Social platforms
+META_APP_ID=
+META_APP_SECRET=
+LINKEDIN_CLIENT_ID=
+LINKEDIN_CLIENT_SECRET=
+TWITTER_CLIENT_ID=
+TWITTER_CLIENT_SECRET=
+PINTEREST_APP_ID=
+PINTEREST_APP_SECRET=
+
+# LemonSqueezy
+LEMONSQUEEZY_API_KEY=
+LEMONSQUEEZY_STORE_ID=
+LEMONSQUEEZY_WEBHOOK_SECRET=
 ```
 
-**Removed from .env.example**: `RESEND_API_KEY`.
+`RESEND_API_KEY` is **removed** from `.env.example`.
 
-### New pip packages (already added to `requirements.txt` via `pip freeze`)
-```
-sendgrid==6.12.5
-boto3==1.43.7
-google-auth==2.52.0
-google-auth-oauthlib==1.4.0
-google-auth-httplib2==0.4.0
-google-api-python-client==2.196.0
-google-generativeai==0.8.6
-anthropic==0.103.0
-beautifulsoup4==4.14.3
-httpx==0.28.1
-```
+### Pip packages added in Phase 1
+`sendgrid · boto3 · google-auth · google-auth-oauthlib ·
+google-auth-httplib2 · google-api-python-client · google-generativeai ·
+anthropic · beautifulsoup4 · httpx`
+
+All pinned in `requirements.txt`.
 
 ---
 
-## 4 · Instructions for the frontend builder
+## 4 · Frontend integration notes
 
-### 4a. Response-shape additions (NON-breaking, only new fields)
+### 4a · New additive fields on existing responses
 
-**`GET /api/articles/{id}`** and **`GET /api/articles?...`** now also return:
-
+`GET /api/articles/{id}` and list now also return:
 ```ts
-{
-  // ...all previous fields...
-  metaTitle: string,
-  metaDescription: string,
-  excerpt: string,
-  estimatedReadTime: number,       // in minutes
-  keyTakeaways: string[],          // bullet points
-  faqSchema: [{question, answer}], // ready for JSON-LD schema
-  suggestedTags: string[],
-  seoScore: number                 // already existed; now deterministic 0-100
-}
+metaTitle, metaDescription, excerpt,
+estimatedReadTime, keyTakeaways: string[],
+faqSchema: [{question, answer}],
+suggestedTags: string[],
+seoScore: number   // deterministic 0-100
 ```
 
-Render these in the article editor / preview UI. They are present from any
-new article generation. Existing articles created before this deploy will
-have `null` for these new fields — handle defensively.
+`GET /api/ai-visibility/scans` / `latest`:
+- Existing fields unchanged
+- New `recommendations: [{action, difficulty, expectedImpact, category}]`
+- New `queries: string[]` (the 20 generated)
+- New `rawResults: object` (per-model raw)
 
-**`GET /api/ai-visibility/latest`** and `scans` now return enriched scan
-records:
+`POST /api/admin/api-keys/{key}/test` response:
+- Existing `success, message`
+- New `latency_ms`, `tested_at`
 
-```ts
-{
-  overallScore: number,
-  chatgptScore, perplexityScore, geminiScore, claudeScore, copilotScore: number,
-  chatgptSentiment, perplexitySentiment, geminiSentiment, claudeSentiment, copilotSentiment:
-    "POSITIVE" | "NEUTRAL" | "NEGATIVE" | "NOT_MENTIONED",
-  recommendations: [
-    { action: string, difficulty: "easy"|"medium"|"hard",
-      expectedImpact: "low"|"medium"|"high", category: string }
-  ],
-  queries: string[],     // NEW — the 20 generated queries shown to AI models
-  rawResults: object     // NEW — per-model raw structure
-}
-```
+`POST /api/brand-voice/train` job result:
+- Existing `formalityScore / playfulnessScore / technicalityScore` ints
+- New `result.profile` containing the full GPT-4o style dict
+  (`tone, formality, playfulness, technicality, sentenceLength,
+  vocabulary, characteristicPhrases[], thingsToAvoid[], writingPersona`)
 
-**`POST /api/admin/api-keys/{key}/test`** response now includes `latency_ms`:
+### 4b · New endpoints to integrate
 
-```ts
-{ success: boolean, message: string, latency_ms: number }
-```
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/admin/api-keys` | Frontend builder uses this to render the entire admin → API Keys page. Each entry already includes its `instructions{title, steps[], url, note}` so no hardcoding is required. |
+| `GET` | `/api/admin/api-keys/{key}` | Single service detail (same shape) |
+| `PUT` | `/api/admin/api-keys/{key}` | Body `{fields:{...}}`. Save button → this endpoint |
+| `POST` | `/api/admin/api-keys/{key}/test` | Test button → this endpoint |
+| `GET` | `/api/analytics/gsc/connect` | Returns `{authUrl}`. Open in popup or full-page redirect. |
+| `GET` | `/api/analytics/gsc/callback` | Google redirects here; backend handles + redirects to `${FRONTEND_URL}/dashboard/analytics?connected=true` |
 
-**`POST /api/brand-voice/train`** result (when polled via job) now includes
-the full GPT-4o profile in `result.profile` with these keys:
-`tone, formality, playfulness, technicality, sentenceLength, vocabulary,
-characteristicPhrases[], thingsToAvoid[], writingPersona`. Existing
-`formalityScore / playfulnessScore / technicalityScore` integer fields are
-still emitted for backward compatibility.
+### 4c · Status badges for API key cards
 
-### 4b. New endpoints to integrate
+The frontend should render the badge from `data[].status`:
 
-1. **`GET /api/analytics/gsc/connect`** (JWT) → returns `{authUrl}`.
-   - Open `authUrl` in a popup or full-page redirect.
-   - Google redirects the browser to
-     `GET /api/analytics/gsc/callback?code&state` which the backend
-     handles and then redirects to
-     `${FRONTEND_URL}/dashboard/analytics?connected=true`.
-   - The frontend just needs to read `?connected=true` and show a toast.
-
-2. The **legacy `POST /api/analytics/gsc/connect`** with `{code}` body is
-   kept working — the new flow above is recommended.
-
-### 4c. Confirmed not changed (still backward-compatible)
-
-- Standard response envelope `{success, data, message, pagination?}` — same.
-- Error envelope `{success:false, error, code, statusCode, details?}` — same.
-- All admin endpoint paths and bodies — same.
-- All user auth endpoints — same.
-- WordPress plugin endpoints (`/api/plugin/*`) — same.
+| status value | meaning | suggested badge colour |
+|---|---|---|
+| `connected` | DB has values + last test passed | green |
+| `not_connected` | No credentials set yet | gray |
+| `error` | Last test failed | red |
+| `pending_review` | OAuth platforms awaiting approval (Meta only by default) | orange |
 
 ---
 
 ## 5 · Breaking changes
 
-**None.** Every change is additive:
-
-- New fields on Article + AiVisibilityScan responses (existing fields preserved).
-- New `latency_ms` on admin api-key/test (existing `success` + `message` preserved).
-- New routes (`GET /api/analytics/gsc/connect`, `GET /api/analytics/gsc/callback`) — additive.
-- Resend → SendGrid swap is invisible to the API consumer; the email body templates are identical.
-- `services/mocks.send_email` is no longer referenced by any router but is
-  kept in the module for any third-party adapter that may still want the
-  generic helper.
+**None.** Every change is additive or replaces an internal mock with a real
+call. All endpoint paths, request bodies, and response envelopes are
+preserved.
 
 ---
 
-## 6 · File-level summary of changes
+## 6 · File-level summary
 
 ```
 backend/
-├── .env                                       # new vars appended
-├── requirements.txt                           # +sendgrid +boto3 +google-* +anthropic +beautifulsoup4 +httpx
-├── core/scheduler.py                          # +cron_weekly_digest
-├── routers/admin/api_keys.py                  # real /test for openai/sendgrid/r2/perplexity/anthropic/gemini/google
-├── routers/admin/announcements.py             # uses real SendGrid announcement_email
-├── routers/analytics.py                       # GET /gsc/connect + GET /gsc/callback; real GSC sync
-├── routers/auth.py                            # uses real SendGrid welcome + password_reset
-├── routers/ai_writer.py                       # train_voice fetches URL via brand_voice service; voice_score uses real GPT-4o
-├── routers/team.py                            # uses real SendGrid team_invite
+├── .env                                  # all env vars now optional (admin panel covers them)
+├── requirements.txt                      # +sendgrid +boto3 +google-* +anthropic +beautifulsoup4 +httpx
+├── seed.py                               # seeds 13 catalogue entries instead of legacy list
+├── core/scheduler.py                     # +cron_weekly_digest
+├── routers/
+│   ├── admin/api_keys.py                 # REWRITTEN — uses ConfigService + catalogue + real tests
+│   ├── admin/announcements.py            # SendGrid announcement_email
+│   ├── analytics.py                      # awaits async GSC build_authorize_url / exchange_code
+│   ├── auth.py                           # SendGrid welcome + password_reset
+│   ├── ai_writer.py                      # real URL fetch + GPT-4o profile + voice scoring
+│   └── team.py                           # SendGrid team_invite
 └── services/
-    ├── ai_visibility.py    # NEW — real 5-model scan + recommendations
-    ├── api_keys.py         # sendgrid replaces resend in SUPPORTED_KEYS
-    ├── brand_voice.py      # NEW — URL fetch + GPT-4o profile
-    ├── email.py            # NEW — SendGrid client + 6 HTML templates
-    ├── gsc.py              # NEW — Google OAuth + searchanalytics
-    ├── jobs.py             # real article job (LLM → DALL-E → R2 → WP REST → email)
-    │                       # real ai_visibility scan call
-    │                       # real growth score formula
-    │                       # real gsc sync
-    │                       # +cron_weekly_digest
-    │                       # rewritten cron_daily_article_generation
-    ├── llm.py              # new article prompt + JSON parsing + SEO scoring + generate_hero_image (DALL-E 3)
-    ├── storage.py          # NEW — Cloudflare R2 via boto3 + download_to_r2 helper
-    └── wordpress.py        # NEW — real WP REST publisher
+    ├── api_catalog.py     # NEW — 13-service metadata catalogue
+    ├── config.py          # NEW — ConfigService (DB-first cache, 5-min TTL)
+    ├── ai_visibility.py   # NEW — real 5-model scan; ConfigService for keys
+    ├── api_keys.py        # SUPPORTED_KEYS = sendgrid+...; kept for legacy callers
+    ├── brand_voice.py     # NEW — URL fetch + GPT-4o profile
+    ├── email.py           # NEW — SendGrid + 6 HTML templates; ConfigService
+    ├── gsc.py             # NEW — async Google OAuth + searchanalytics; ConfigService
+    ├── jobs.py            # real article pipeline + real AI scan + real growth score + real GSC sync + cron_weekly_digest
+    ├── llm.py             # new article prompt + JSON parsing + SEO scoring + DALL-E 3; ConfigService
+    ├── storage.py         # NEW — Cloudflare R2 boto3 + download_to_r2; ConfigService
+    └── wordpress.py       # NEW — real WP REST publisher
 ```
 
 ---
 
-## 7 · Status
+## 7 · Verification (local)
 
-✅ All 13 spec sections completed.
-✅ Local smoke tests pass (health, plans, admin login, admin api-keys list,
-   openai live ping returns success=false because local has no real OpenAI
-   key — Railway with real key will succeed).
-✅ No breaking changes to the existing 100 %-passing endpoint surface.
-✅ `requirements.txt` regenerated and Railway-installable (no private packages).
+- ✅ 13 catalogue services seeded across 7 sections
+- ✅ `GET /api/admin/api-keys` returns full catalogue with metadata + instructions
+- ✅ `PUT /api/admin/api-keys/{key}` saves encrypted fields; cache invalidates immediately
+- ✅ `POST /api/admin/api-keys/openai/test` makes a real OpenAI API call (returns 401 locally because test key is fake — confirms the path is live)
+- ✅ `POST /api/admin/api-keys/cloudflare_r2/test` makes a real boto3 call to R2 (SSL failure with fake account id — confirms the path is live)
+- ✅ Saved key in admin panel is **immediately** retrievable via
+  `await config_service.get_value("openai")` from any service module
+- ✅ All Phase-0 regression tests pass (verified: auth register, /auth/me,
+  public plans, admin dashboard, ai-visibility/simulate, article generation
+  background job completes status=completed progress=100)
 
-The next deployment to Railway should "just work" as long as the new env
-vars are populated. Anything left unset degrades gracefully — endpoints
-return `{success:false, message:"...not configured"}` instead of crashing.
+## 8 · Next phase backlog (Phase 2)
+
+1. Real LemonSqueezy + DataForSEO integration (one file each)
+2. Real publishers for Webflow / Ghost / HubSpot / Wix / Notion
+3. Real publishers for IG / FB / LinkedIn / Twitter / Pinterest / YouTube
+4. Real Google login (`POST /api/auth/google`)
+5. Move in-memory rate-limit + admin-lockout to Redis with `X-Forwarded-For`
+6. Plan-limit enforcement middleware
