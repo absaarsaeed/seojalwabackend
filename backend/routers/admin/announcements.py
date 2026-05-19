@@ -55,9 +55,10 @@ async def send_announcement(body: AnnouncementReq):
 
     channel = body.channel.upper()
     if channel in {"EMAIL", "BOTH"}:
+        from services import email as _email
         for r in recipients:
-            await mocks.send_email(r["email"], "announcement", body.subject,
-                                   f"<p>{body.message}</p>")
+            await _email.announcement_email(r["email"], body.subject,
+                                            body.message)
     doc = {
         "id": str(uuid.uuid4()), "subject": body.subject,
         "message": body.message, "targetPlan": target,

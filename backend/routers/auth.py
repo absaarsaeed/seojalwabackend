@@ -14,7 +14,8 @@ from core.security import (
     create_access_token, create_refresh_token, decode_refresh_token,
     hash_password, utcnow_iso, verify_password,
 )
-from services import mocks
+import os
+from services import email, mocks
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -84,10 +85,10 @@ async def register(body: RegisterReq):
             "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
         })
 
-    await mocks.send_email(
-        to=body.email, template="welcome",
-        subject="Welcome to SEO Jalwa",
-        html=f"<p>Welcome {body.fullName}! Verify: /api/auth/verify-email/{verify_token}</p>",
+    await email.welcome_email(
+        user_name=body.fullName,
+        to=body.email,
+        login_url=f"{os.environ.get('FRONTEND_URL', '')}/login",
     )
 
     return created({
@@ -175,10 +176,11 @@ async def forgot_password(body: ForgotReq):
             {"id": user["id"]},
             {"$set": {"resetPasswordToken": token,
                       "resetPasswordExpiry": expiry}})
-        await mocks.send_email(
-            to=body.email, template="password-reset",
-            subject="Reset your password",
-            html=f"<p>Reset link: /reset-password?token={token}</p>")
+        await email.password_reset(
+            user_name=user.get("fullName", "there"),
+            to=body.email,
+            reset_url=f"{os.environ.get('FRONTEND_URL', '')}/reset-password?token={token}",
+        )
     # Always return success to avoid email enumeration
     return ok({"sent": True}, "If the account exists, an email has been sent")
 

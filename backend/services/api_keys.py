@@ -21,7 +21,7 @@ _TTL_SECONDS = 300
 
 
 SUPPORTED_KEYS = [
-    "openai", "anthropic", "gemini", "perplexity", "resend", "dataforseo",
+    "openai", "anthropic", "gemini", "perplexity", "sendgrid", "dataforseo",
     "r2_account_id", "r2_access_key_id", "r2_secret_access_key",
     "lemonsqueezy_api_key", "lemonsqueezy_store_id",
     "meta_app_id", "meta_app_secret",

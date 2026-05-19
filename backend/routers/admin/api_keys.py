@@ -89,32 +89,56 @@ async def test_key(key: str):
     rec = await db.api_configs.find_one({"key": key.lower()}, {"_id": 0})
     if not rec:
         raise APIError("Key not configured", "NOT_FOUND", 404)
+    import time
+    t0 = time.perf_counter()
     success, message = False, "Not implemented for this service"
     try:
-        if key.lower() == "openai":
-            # Real test using emergent integrations
+        k = key.lower()
+        if k == "openai":
             resp = await chat_completion(
-                "Reply with the word READY only.", "Ping?", model="gpt-4o-mini")
-            success = "READY" in resp.upper() or len(resp) > 0
+                "Reply with the word READY only.", "Ping?",
+                model="gpt-4o-mini")
+            success = bool(resp) and not resp.startswith("[LLM unavailable")
             message = resp[:200]
-        elif key.lower() == "resend":
-            await mocks.send_email("ops@seojalwa.com", "API key test",
-                                   "<p>Ping</p>", "test")
-            success, message = True, "Test email queued (mock)"
-        elif key.lower().startswith("lemonsqueezy"):
-            success, message = True, "Store info fetched (mock)"
-        elif key.lower() == "dataforseo":
+        elif k == "sendgrid":
+            from services import email as _e
+            r = await _e.test_sendgrid()
+            success, message = r.get("success", False), r.get("message", "")
+        elif k.startswith("r2"):
+            from services import storage as _s
+            r = await _s.test_r2()
+            success, message = r["success"], r["message"]
+        elif k == "perplexity":
+            from services import ai_visibility as _av
+            r = await _av.test_perplexity()
+            success, message = r["success"], r["message"]
+        elif k == "anthropic":
+            from services import ai_visibility as _av
+            r = await _av.test_anthropic()
+            success, message = r["success"], r["message"]
+        elif k == "gemini":
+            from services import ai_visibility as _av
+            r = await _av.test_gemini()
+            success, message = r["success"], r["message"]
+        elif k.startswith("google"):
+            from services import gsc as _gsc
+            r = await _gsc.test_gsc()
+            success, message = r["success"], r["message"]
+        elif k.startswith("lemonsqueezy"):
+            success, message = True, "LemonSqueezy store info fetched (MOCK)"
+        elif k == "dataforseo":
             await mocks.keyword_research(["test"])
-            success, message = True, "Balance fetched (mock)"
-        elif key.lower().startswith("r2"):
-            success, message = True, "Buckets listed (mock)"
+            success, message = True, "DataForSEO balance fetched (MOCK)"
+        elif k == "resend":
+            success, message = True, "Resend removed — use SendGrid"
         else:
             success, message = True, "Connectivity OK (mock)"
     except Exception as e:
         success, message = False, str(e)
-
+    latency_ms = int((time.perf_counter() - t0) * 1000)
     await db.api_configs.update_one(
         {"key": key.lower()},
         {"$set": {"lastTestedAt": utcnow_iso(),
                   "testStatus": "SUCCESS" if success else "FAILED"}})
-    return ok({"success": success, "message": message})
+    return ok({"success": success, "message": message,
+               "latency_ms": latency_ms})

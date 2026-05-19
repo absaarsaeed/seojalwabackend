@@ -49,33 +49,190 @@ async def generate_article(
     brand_voice: dict | None,
     length_words: int = 2000,
     instructions: str = "",
+    language: str = "English",
+    include_hero_image: bool = True,
+    include_toc: bool = True,
+    include_key_takeaways: bool = True,
+    imagery_prompt: str = "",
 ) -> dict:
-    voice_note = ""
+    """Real GPT-4o article generation. Returns a dict matching the spec.
+
+    Output fields: title, metaDescription, content (HTML), excerpt,
+    keyTakeaways[], faqSchema[{question,answer}], suggestedTags[],
+    estimatedReadTime, wordCount, seoScore.
+    """
+    import json
+    import re as _re
+
+    voice_block = ""
     if brand_voice:
-        voice_note = (
-            f"\nBrand voice — formality {brand_voice.get('formalityScore', 50)}/100, "
-            f"playfulness {brand_voice.get('playfulnessScore', 50)}/100, "
-            f"technicality {brand_voice.get('technicalityScore', 50)}/100."
+        sp = brand_voice.get("styleProfile") or brand_voice
+        voice_block = (
+            "\n\nBrand voice context:\n"
+            f"- Tone: {sp.get('tone', 'balanced')}\n"
+            f"- Formality: {sp.get('formality', sp.get('formalityScore', 50))}/100\n"
+            f"- Playfulness: {sp.get('playfulness', sp.get('playfulnessScore', 50))}/100\n"
+            f"- Technicality: {sp.get('technicality', sp.get('technicalityScore', 50))}/100\n"
+            f"- Characteristic phrases to use: "
+            f"{', '.join(sp.get('characteristicPhrases', []) or [])}\n"
+            f"- Things to avoid: "
+            f"{', '.join(sp.get('thingsToAvoid', []) or [])}"
         )
+
     system = (
-        "You are an expert SEO content writer. Produce well-structured, "
-        "engaging articles with H2/H3 headings, intro, key takeaways and conclusion."
-        + voice_note
+        "You are an expert SEO content writer. Write a comprehensive, engaging "
+        "article that ranks highly on Google. Follow these requirements exactly:\n\n"
+        "Structure:\n"
+        "- SEO-optimized title with target keyword near the beginning\n"
+        "- Meta description 150-160 characters with keyword\n"
+        "- H1 title (same as article title)\n"
+        "- Introduction paragraph with keyword in first 100 words\n"
+        "- 4-6 H2 subheadings with keyword variations\n"
+        "- H3 subheadings under each H2 where appropriate\n"
+        + ("- Key Takeaways box after introduction\n" if include_key_takeaways else "")
+        + ("- Table of contents after key takeaways\n" if include_toc else "")
+        + "- Conclusion with call to action\n"
+        "- FAQ section with 5 questions (schema-friendly format)\n\n"
+        "SEO requirements:\n"
+        "- Target keyword density: 1-2%\n"
+        "- LSI/related keywords throughout\n"
+        "- Short sentences (under 20 words)\n"
+        "- Short paragraphs (under 4 sentences)\n"
+        "- Active voice throughout\n"
+        "- External link suggestions marked as [EXTERNAL_LINK: anchor text]\n"
+        "- Internal link suggestions marked as [INTERNAL_LINK: anchor text]\n\n"
+        f"Language: {language}.\n"
+        "Output format: Return STRICT JSON with these exact fields:\n"
+        "{\n"
+        '  "title": string,\n'
+        '  "metaDescription": string,\n'
+        '  "content": string (full HTML),\n'
+        '  "excerpt": string (2 sentences),\n'
+        '  "keyTakeaways": string[],\n'
+        '  "faqSchema": [{"question": string, "answer": string}],\n'
+        '  "suggestedTags": string[],\n'
+        '  "estimatedReadTime": number,\n'
+        '  "wordCount": number\n'
+        "}\n"
+        "Return ONLY the JSON object. No prose, no markdown fences."
+        + voice_block
     )
-    prompt = (
-        f"Write an SEO article of about {length_words} words.\n"
-        f"Title topic: {topic}\nTarget keyword: {keyword}\n"
+
+    user_prompt = (
+        f"Target topic: {topic}\n"
+        f"Target keyword: {keyword}\n"
+        f"Approximate word count: {length_words}\n"
         f"Extra instructions: {instructions or 'None'}\n"
-        "Return the article as Markdown with a single H1 title at the top."
     )
-    content = await chat_completion(system, prompt)
-    title = topic
-    for line in content.splitlines():
-        if line.startswith("# "):
-            title = line[2:].strip()
-            break
-    word_count = len(content.split())
-    return {"title": title, "content": content, "wordCount": word_count}
+
+    raw = await chat_completion(system, user_prompt, model="gpt-4o")
+
+    # Strip code fences if any then parse JSON
+    cleaned = _re.sub(r"^```(?:json)?|```$", "", raw.strip(),
+                      flags=_re.MULTILINE).strip()
+    try:
+        data = json.loads(cleaned)
+    except Exception:
+        match = _re.search(r"\{.*\}", cleaned, _re.S)
+        if match:
+            try:
+                data = json.loads(match.group(0))
+            except Exception:
+                data = {}
+        else:
+            data = {}
+
+    # Defaults & sane fallbacks
+    title = data.get("title") or topic
+    content = data.get("content") or ""
+    meta_description = data.get("metaDescription") or ""
+    excerpt = data.get("excerpt") or ""
+    key_takeaways = data.get("keyTakeaways") or []
+    faq_schema = data.get("faqSchema") or []
+    suggested_tags = data.get("suggestedTags") or []
+    word_count = int(data.get("wordCount") or len(content.split()) or 0)
+    read_time = int(data.get("estimatedReadTime") or max(1, word_count // 200))
+
+    seo_score = calculate_seo_score(
+        title=title, content=content, meta_description=meta_description,
+        keyword=keyword, word_count=word_count,
+        has_faq=bool(faq_schema), has_takeaways=bool(key_takeaways),
+        has_toc=include_toc, read_time_set=bool(read_time),
+    )
+
+    return {
+        "title": title,
+        "metaDescription": meta_description,
+        "metaTitle": title[:60],
+        "content": content,
+        "excerpt": excerpt,
+        "keyTakeaways": key_takeaways,
+        "faqSchema": faq_schema,
+        "suggestedTags": suggested_tags,
+        "estimatedReadTime": read_time,
+        "wordCount": word_count,
+        "seoScore": seo_score,
+        "raw": raw if not data else None,
+    }
+
+
+def calculate_seo_score(*, title: str, content: str, meta_description: str,
+                        keyword: str, word_count: int,
+                        has_faq: bool, has_takeaways: bool,
+                        has_toc: bool, read_time_set: bool) -> int:
+    """Deterministic SEO scoring per spec (max 100)."""
+    score = 0
+    kw = (keyword or "").lower().strip()
+    if not kw:
+        return 0
+    title_l = (title or "").lower()
+    content_l = (content or "").lower()
+    md = meta_description or ""
+    first_100 = " ".join(content_l.split()[:100])
+
+    if kw in title_l:
+        score += 15
+    if kw in first_100:
+        score += 10
+    if 150 <= len(md) <= 160:
+        score += 10
+    if kw in md.lower():
+        score += 10
+    h2_count = content_l.count("<h2")
+    if h2_count >= 4:
+        score += 15
+    if word_count >= 1500:
+        score += 10
+    if has_faq:
+        score += 10
+    if has_takeaways:
+        score += 10
+    if has_toc:
+        score += 5
+    if read_time_set:
+        score += 5
+    return min(score, 100)
+
+
+async def generate_hero_image(title: str, imagery_prompt: str = "") -> str | None:
+    """Real DALL-E 3 hero image. Returns the OpenAI URL (caller re-uploads to R2)."""
+    style = imagery_prompt or "modern professional business photography"
+    prompt = (
+        f"Professional blog header image for an article titled '{title}'. "
+        f"Clean, modern, high-quality photography style. Bright and "
+        f"professional. No text in the image. Aspect ratio 16:9. Style: {style}"
+    )
+    try:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=_api_key())
+        resp = await client.images.generate(
+            model="dall-e-3", prompt=prompt,
+            size="1792x1024", quality="standard", n=1,
+        )
+        return resp.data[0].url
+    except Exception as e:
+        logger.warning("DALL-E hero gen failed: %s", e)
+        return None
 
 
 async def generate_social_caption(article_title: str, platform: str,

@@ -8,6 +8,7 @@ from core.database import get_db
 from core.dependencies import get_current_user
 from core.response import APIError, ok, paginate
 from core.security import utcnow_iso
+import os
 from services import mocks
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -78,29 +79,52 @@ async def sync(body: SyncReq, user=Depends(get_current_user)):
         {"id": body.siteId, "userId": user["id"]}, {"_id": 0})
     if not site:
         raise APIError("Site not found", "NOT_FOUND", 404)
-    perf = await mocks.gsc_fetch_performance(site.get("url", ""))
-    # Distribute mock impressions/clicks across published articles
-    pubs = await get_db().articles.find(
-        {"siteId": body.siteId, "status": "PUBLISHED"},
-        {"_id": 0, "id": 1}).to_list(1000)
-    if pubs:
-        for i, a in enumerate(pubs):
-            await get_db().articles.update_one({"id": a["id"]}, {"$set": {
-                "impressions": int(perf["totalImpressions"] / len(pubs)),
-                "clicks": int(perf["totalClicks"] / len(pubs)),
-                "ctr": perf["avgCTR"], "avgPosition": perf["avgPosition"],
-            }})
-    return ok({"synced": True, "lastSync": utcnow_iso(),
-               "totalClicks": perf["totalClicks"]})
+    # Use real GSC sync job (falls back gracefully if no token / not configured)
+    from services import jobs as _jobs
+    return ok(await _jobs.run_gsc_sync(body.siteId, user["id"]))
 
 
 @router.post("/gsc/connect")
 async def gsc_connect(body: GscConnectReq, user=Depends(get_current_user)):
-    tokens = await mocks.gsc_exchange_code(body.code)
+    """Backward-compat: accept code in POST body (old flow)."""
+    from services import gsc as _gsc
+    tokens = _gsc.exchange_code(body.code) or {}
     from core.encryption import encrypt
     await get_db().users.update_one(
         {"id": user["id"]},
-        {"$set": {"gscAccessToken": encrypt(tokens["access_token"]),
-                  "gscRefreshToken": encrypt(tokens["refresh_token"]),
+        {"$set": {"gscAccessToken": encrypt(tokens.get("access_token", "")),
+                  "gscRefreshToken": encrypt(tokens.get("refresh_token", "")),
+                  "gscTokenExpiry": tokens.get("expiry"),
                   "updatedAt": utcnow_iso()}})
-    return ok({"connected": True})
+    return ok({"connected": bool(tokens.get("access_token"))})
+
+
+@router.get("/gsc/connect")
+async def gsc_authorize(user=Depends(get_current_user)):
+    """Step 1 — return the Google authorize URL with state = userId."""
+    from services import gsc as _gsc
+    state = user["id"]
+    url = _gsc.build_authorize_url(state)
+    if not url:
+        raise APIError("Google OAuth not configured", "GSC_NOT_CONFIGURED",
+                       400)
+    return ok({"authUrl": url})
+
+
+@router.get("/gsc/callback")
+async def gsc_callback(code: str, state: str):
+    """Step 2 — Google redirects here with ?code & ?state=userId."""
+    from services import gsc as _gsc
+    from core.encryption import encrypt
+    tokens = _gsc.exchange_code(code) or {}
+    if not tokens.get("access_token"):
+        raise APIError("Token exchange failed", "GSC_EXCHANGE_FAILED", 400)
+    await get_db().users.update_one(
+        {"id": state},
+        {"$set": {"gscAccessToken": encrypt(tokens["access_token"]),
+                  "gscRefreshToken": encrypt(tokens.get("refresh_token", "")),
+                  "gscTokenExpiry": tokens.get("expiry"),
+                  "updatedAt": utcnow_iso()}})
+    from fastapi.responses import RedirectResponse
+    frontend = os.environ.get("FRONTEND_URL", "/")
+    return RedirectResponse(url=f"{frontend}/dashboard/analytics?connected=true")

@@ -10,7 +10,8 @@ from core.database import get_db
 from core.dependencies import get_current_user
 from core.response import APIError, created, ok
 from core.security import utcnow_iso
-from services import mocks
+import os
+from services import email, mocks
 
 router = APIRouter(prefix="/team", tags=["team"])
 
@@ -59,10 +60,12 @@ async def invite(body: InviteReq, user=Depends(get_current_user)):
             "id": str(uuid.uuid4()),
             "teamMemberId": doc["id"], "siteId": sid,
         })
-    await mocks.send_email(
-        to=body.email, template="team-invite",
-        subject=f"{user['fullName']} invited you to SEO Jalwa",
-        html=f"<a href='/team/accept/{token}'>Accept invite</a>")
+    await email.team_invite(
+        inviter_name=user.get("fullName", "Someone"),
+        workspace_name=user.get("fullName", "their team"),
+        to=body.email,
+        accept_url=f"{os.environ.get('FRONTEND_URL', '')}/team/accept/{token}",
+    )
     doc.pop("_id", None)
     return created(doc, "Invitation sent")
 

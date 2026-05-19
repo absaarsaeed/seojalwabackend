@@ -20,19 +20,22 @@ def start_scheduler():
         cron_weekly_growth_score,
         cron_daily_gsc_sync,
         cron_hourly_social_publish,
+        cron_weekly_digest,
     )
 
     scheduler.add_job(cron_daily_article_generation,
                       CronTrigger(hour=6, minute=0))
     scheduler.add_job(cron_weekly_ai_visibility,
                       CronTrigger(day_of_week="mon", hour=8, minute=0))
+    scheduler.add_job(cron_weekly_digest,
+                      CronTrigger(day_of_week="mon", hour=8, minute=5))
     scheduler.add_job(cron_weekly_growth_score,
                       CronTrigger(day_of_week="mon", hour=7, minute=0))
     scheduler.add_job(cron_daily_gsc_sync, CronTrigger(hour=2, minute=0))
     scheduler.add_job(cron_hourly_social_publish, CronTrigger(minute=0))
 
     scheduler.start()
-    logger.info("APScheduler started with 5 cron jobs")
+    logger.info("APScheduler started with 6 cron jobs")
     return scheduler
 
 

@@ -93,7 +93,9 @@ async def generate_content(body: GenerateReq, user=Depends(get_current_user)):
 async def voice_score(body: ScoreReq, user=Depends(get_current_user)):
     brand_voice = await get_db().brand_voices.find_one(
         {"siteId": body.siteId, "userId": user["id"]}, {"_id": 0})
-    res = await llm.score_against_voice(body.content, brand_voice)
+    profile = (brand_voice or {}).get("styleProfile") or {}
+    from services import brand_voice as _bv
+    res = await _bv.score_against_profile(body.content, profile)
     return ok(res)
 
 
