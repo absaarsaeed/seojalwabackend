@@ -184,7 +184,7 @@ AU=$(curl -s "$API_URL/api/admin/users" -H "X-Admin-Token: $ATOKEN")
 # ─── 27. Admin api-keys list ───
 AAK=$(curl -s "$API_URL/api/admin/api-keys" -H "X-Admin-Token: $ATOKEN")
 AAK_N=$(echo "$AAK" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('data',[])))")
-[[ "$AAK_N" -eq 13 ]] && check "GET /api/admin/api-keys" OK "$AAK_N services rich shape" || \
+[[ "$AAK_N" -eq 14 ]] && check "GET /api/admin/api-keys" OK "$AAK_N services rich shape" || \
   check "GET /api/admin/api-keys" FAIL "got $AAK_N"
 
 # ─── 28. Admin api-keys PUT (shape 1) ───

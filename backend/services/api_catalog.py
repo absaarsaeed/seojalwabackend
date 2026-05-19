@@ -145,6 +145,36 @@ CATALOG: list[dict] = [
                      "for best deliverability."),
         },
     },
+    {
+        "key": "resend",
+        "label": "Resend",
+        "section": "Email",
+        "description": ("Alternative email provider. Used if SendGrid is not "
+                        "configured. Sends welcome emails, password resets, "
+                        "weekly reports."),
+        "fields": [
+            {"name": "api_key", "label": "API Key",
+             "type": "password", "placeholder": "re_...", "required": True},
+            {"name": "from_email", "label": "From Email Address",
+             "type": "email", "placeholder": "hello@seojalwa.com",
+             "required": True},
+        ],
+        "env_map": {"api_key": "RESEND_API_KEY",
+                     "from_email": "RESEND_FROM_EMAIL"},
+        "instructions": {
+            "title": "How to get this key",
+            "steps": [
+                "Go to resend.com and sign up free",
+                "Go to API Keys → Create API Key",
+                "Copy the key starting with re_",
+                "Verify your domain in Domains section",
+                "Paste the key above and Save",
+            ],
+            "url": "https://resend.com/api-keys",
+            "note": ("Free plan allows 3,000 emails/month. Verify your "
+                     "domain for best deliverability."),
+        },
+    },
 
     # -------------------------------------------------- SEO & Keywords
     {

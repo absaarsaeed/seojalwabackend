@@ -1,10 +1,12 @@
-"""SendGrid email service + all transactional HTML templates.
+"""Email service — SendGrid (primary) + Resend (fallback).
 
-Set `SENDGRID_API_KEY` in env. Sender is `SENDGRID_FROM_EMAIL` (verified in
-SendGrid dashboard) with display name `SENDGRID_FROM_NAME`.
+Provider selection logic (in order):
+  1. SendGrid if `sendgrid.api_key` is configured.
+  2. Resend if `resend.api_key` is configured and SendGrid is not.
+  3. Skip with a warning if neither is configured.
 
-Every send is fault-tolerant: a missing key or SendGrid error is logged and
-returned as `{success:false}` — the calling endpoint never raises.
+Every send is fault-tolerant: a missing key or provider error is logged
+and returned as `{success:false}` — the calling endpoint never raises.
 """
 from __future__ import annotations
 
@@ -12,6 +14,7 @@ import logging
 import os
 from typing import Optional
 
+import httpx
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 
@@ -19,6 +22,62 @@ logger = logging.getLogger("jalwa.email")
 
 FROM_EMAIL = os.environ.get("SENDGRID_FROM_EMAIL", "hello@seojalwa.com")
 FROM_NAME = os.environ.get("SENDGRID_FROM_NAME", "SEO Jalwa")
+
+
+async def _send_via_sendgrid(to: str, subject: str, html: str,
+                             text: Optional[str], template: str,
+                             api_key: str, from_email: str) -> dict:
+    try:
+        message = Mail(
+            from_email=(from_email, FROM_NAME),
+            to_emails=to,
+            subject=subject,
+            html_content=html,
+            plain_text_content=text,
+        )
+        response = SendGridAPIClient(api_key=api_key).send(message)
+        logger.info("[EMAIL sent via sendgrid] template=%s to=%s status=%s",
+                    template, to, response.status_code)
+        return {"success": True, "provider": "sendgrid",
+                "status_code": response.status_code,
+                "to": to, "template": template}
+    except Exception as e:
+        logger.exception("SendGrid send failed: %s", e)
+        return {"success": False, "provider": "sendgrid",
+                "error": str(e), "to": to, "template": template}
+
+
+async def _send_via_resend(to: str, subject: str, html: str,
+                           text: Optional[str], template: str,
+                           api_key: str, from_email: str) -> dict:
+    payload: dict = {
+        "from": f"{FROM_NAME} <{from_email}>",
+        "to": [to],
+        "subject": subject,
+        "html": html,
+    }
+    if text:
+        payload["text"] = text
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {api_key}",
+                         "Content-Type": "application/json"},
+                json=payload)
+        logger.info("[EMAIL sent via resend] template=%s to=%s status=%s",
+                    template, to, r.status_code)
+        if r.status_code in (200, 201, 202):
+            return {"success": True, "provider": "resend",
+                    "status_code": r.status_code,
+                    "to": to, "template": template}
+        return {"success": False, "provider": "resend",
+                "status_code": r.status_code,
+                "error": r.text[:200], "to": to, "template": template}
+    except Exception as e:
+        logger.exception("Resend send failed: %s", e)
+        return {"success": False, "provider": "resend",
+                "error": str(e), "to": to, "template": template}
 
 
 # ---------------------------------------------------------------- low-level
@@ -29,35 +88,38 @@ async def send_email(
     text: Optional[str] = None,
     template: str = "generic",
 ) -> dict:
-    """Fire an email through SendGrid. Never raises."""
+    """Send email via the first configured provider (SendGrid > Resend).
+
+    Never raises. Returns `{success, provider?, status_code?, error?}`.
+    """
     from services.config import config_service
-    fields = await config_service.get_fields("sendgrid")
-    api_key = fields.get("api_key") or os.environ.get("SENDGRID_API_KEY")
-    from_email = (fields.get("from_email")
-                  or os.environ.get("SENDGRID_FROM_EMAIL", FROM_EMAIL))
-    if not api_key:
-        logger.info("[EMAIL skipped — SENDGRID_API_KEY not set] to=%s subject=%s",
-                    to, subject)
-        return {"success": False, "skipped": True, "to": to,
-                "template": template}
-    try:
-        message = Mail(
-            from_email=(from_email, FROM_NAME),
-            to_emails=to,
-            subject=subject,
-            html_content=html,
-            plain_text_content=text,
-        )
-        sg = SendGridAPIClient(api_key=api_key)
-        response = sg.send(message)
-        logger.info("[EMAIL sent] template=%s to=%s status=%s",
-                    template, to, response.status_code)
-        return {"success": True, "status_code": response.status_code,
-                "to": to, "template": template}
-    except Exception as e:
-        logger.exception("SendGrid send failed: %s", e)
-        return {"success": False, "error": str(e), "to": to,
-                "template": template}
+
+    # 1) SendGrid (preferred)
+    sg_fields = await config_service.get_fields("sendgrid")
+    sg_key = sg_fields.get("api_key") or os.environ.get("SENDGRID_API_KEY")
+    if sg_key:
+        sg_from = (sg_fields.get("from_email")
+                   or os.environ.get("SENDGRID_FROM_EMAIL", FROM_EMAIL))
+        return await _send_via_sendgrid(
+            to, subject, html, text, template, sg_key, sg_from)
+
+    # 2) Resend (fallback)
+    re_fields = await config_service.get_fields("resend")
+    re_key = re_fields.get("api_key") or os.environ.get("RESEND_API_KEY")
+    if re_key:
+        re_from = (re_fields.get("from_email")
+                   or os.environ.get("RESEND_FROM_EMAIL", FROM_EMAIL))
+        return await _send_via_resend(
+            to, subject, html, text, template, re_key, re_from)
+
+    # 3) Neither configured
+    logger.warning(
+        "Email not sent to %s (template=%s): No email provider configured. "
+        "Add SendGrid or Resend API key in admin panel.",
+        to, template)
+    return {"success": False, "skipped": True, "to": to,
+            "template": template,
+            "error": "no_email_provider_configured"}
 
 
 # ---------------------------------------------------------------- shell HTML

@@ -201,6 +201,23 @@ async def _run_test(key: str, fields: dict) -> dict:
         except Exception as e:
             return {"success": False, "message": str(e)[:200]}
 
+    if key == "resend":
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    "https://api.resend.com/domains",
+                    headers={"Authorization": f"Bearer {fields.get('api_key','')}"})
+                if r.status_code == 200:
+                    domains = r.json().get("data", []) or []
+                    return {"success": True,
+                            "message": (f"Authenticated ({len(domains)} "
+                                        f"verified domain(s))")}
+                return {"success": False,
+                        "message": f"HTTP {r.status_code}: {r.text[:160]}"}
+        except Exception as e:
+            return {"success": False, "message": str(e)[:200]}
+
     if key == "cloudflare_r2":
         try:
             import boto3
