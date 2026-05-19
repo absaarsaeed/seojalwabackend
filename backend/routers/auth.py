@@ -1,9 +1,14 @@
 """Auth routes — user registration, login, Google OAuth, refresh, etc."""
+import secrets
+import time
+import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+import httpx
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 
 from core.database import get_db
@@ -16,9 +21,40 @@ from core.security import (
 )
 import os
 from routers.sites import clean_website_url, create_site_from_url
-from services import email, mocks
+from services import email
+from services.config import config_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# ------------------------ Google OAuth state cache (CSRF) -----------------
+# Maps state token → (expiry_unix_ts, optional return_url). 5-minute TTL.
+_GOOGLE_STATE_TTL = 300
+_google_states: dict[str, float] = {}
+
+
+def _store_google_state() -> str:
+    state = secrets.token_urlsafe(24)
+    _google_states[state] = time.time() + _GOOGLE_STATE_TTL
+    # Purge expired entries opportunistically
+    now = time.time()
+    for k, exp in list(_google_states.items()):
+        if exp < now:
+            _google_states.pop(k, None)
+    return state
+
+
+def _consume_google_state(state: str) -> bool:
+    exp = _google_states.pop(state, None)
+    return bool(exp and exp > time.time())
+
+
+def _google_redirect_uri(request: Request) -> str:
+    """Backend callback URL Google will redirect to. Configurable via env."""
+    override = os.environ.get("GOOGLE_AUTH_REDIRECT_URI", "").strip()
+    if override:
+        return override
+    # Fall back to the current request's scheme+host
+    return f"{request.url.scheme}://{request.url.netloc}/api/auth/google/callback"
 
 
 class RegisterReq(BaseModel):
@@ -31,10 +67,6 @@ class RegisterReq(BaseModel):
 class LoginReq(BaseModel):
     email: EmailStr
     password: str
-
-
-class GoogleReq(BaseModel):
-    googleToken: str
 
 
 class RefreshReq(BaseModel):
@@ -115,28 +147,128 @@ async def login(body: LoginReq):
     }, "Login successful")
 
 
-@router.post("/google", dependencies=[Depends(rate_limit("auth", 10, 60))])
-async def google_login(body: GoogleReq):
-    info = await mocks.verify_google_token(body.googleToken)
-    if not info:
-        raise APIError("Invalid Google token", "INVALID_TOKEN", 401)
+@router.get("/google")
+async def google_start(request: Request):
+    """Step 1 — generate OAuth state, redirect to Google's consent screen."""
+    client_id = await config_service.get_value("google_oauth", "client_id")
+    if not client_id:
+        raise APIError(
+            "Google OAuth is not configured. Ask the admin to add the "
+            "Google client_id/secret in the API Keys panel.",
+            "GOOGLE_OAUTH_NOT_CONFIGURED", 503)
+    state = _store_google_state()
+    params = {
+        "client_id": client_id,
+        "redirect_uri": _google_redirect_uri(request),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account",
+    }
+    url = ("https://accounts.google.com/o/oauth2/v2/auth?"
+           + urllib.parse.urlencode(params))
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/google/callback")
+async def google_callback(request: Request,
+                          code: Optional[str] = Query(None),
+                          state: Optional[str] = Query(None),
+                          error: Optional[str] = Query(None)):
+    """Step 2 — exchange code, find/create user, redirect back to frontend."""
+    frontend = os.environ.get("FRONTEND_URL", "").rstrip("/")
+
+    def _fail(reason: str):
+        target = (f"{frontend}/login?googleError="
+                  f"{urllib.parse.quote(reason)}") if frontend else \
+            f"/login?googleError={urllib.parse.quote(reason)}"
+        return RedirectResponse(target, status_code=302)
+
+    if error:
+        return _fail(error)
+    if not code or not state or not _consume_google_state(state):
+        return _fail("invalid_state_or_code")
+
+    client_id = await config_service.get_value("google_oauth", "client_id")
+    client_secret = await config_service.get_value("google_oauth",
+                                                   "client_secret")
+    if not client_id or not client_secret:
+        return _fail("google_oauth_not_configured")
+
+    redirect_uri = _google_redirect_uri(request)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code, "client_id": client_id,
+                    "client_secret": client_secret,
+                    "redirect_uri": redirect_uri,
+                    "grant_type": "authorization_code",
+                })
+            if token_resp.status_code != 200:
+                return _fail("token_exchange_failed")
+            access_token = token_resp.json().get("access_token", "")
+            if not access_token:
+                return _fail("no_access_token")
+
+            info_resp = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"})
+            if info_resp.status_code != 200:
+                return _fail("userinfo_failed")
+            info = info_resp.json()
+    except Exception:
+        return _fail("google_request_failed")
+
+    google_id = info.get("id")
+    email_addr = (info.get("email") or "").lower()
+    if not google_id or not email_addr:
+        return _fail("invalid_google_profile")
+
     db = get_db()
-    user = await db.users.find_one({"email": info["email"].lower()})
-    if not user:
+    user = await db.users.find_one(
+        {"$or": [{"googleId": google_id}, {"email": email_addr}],
+         "deleted": {"$ne": True}})
+
+    is_new_user = False
+    if user:
+        # Link Google account if user signed up with email/password originally
+        if not user.get("googleId"):
+            await db.users.update_one(
+                {"id": user["id"]},
+                {"$set": {"googleId": google_id,
+                          "profilePhoto": info.get("picture")
+                          or user.get("profilePhoto"),
+                          "emailVerified": True,
+                          "updatedAt": utcnow_iso()}})
+    else:
+        is_new_user = True
         user_id = str(uuid.uuid4())
         user = {
-            "id": user_id, "email": info["email"].lower(),
-            "password": "", "fullName": info["name"],
-            "profilePhoto": info.get("picture"),
-            "googleId": info["googleId"], "emailVerified": True,
+            "id": user_id, "email": email_addr,
+            "password": None, "fullName": info.get("name", email_addr),
+            "googleId": google_id, "profilePhoto": info.get("picture"),
+            "emailVerified": True, "websiteUrl": "",
+            "notifications": {"emailDigest": True, "weeklyScore": True,
+                              "aiAlerts": True, "billingAlerts": True},
             "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
         }
         await db.users.insert_one(dict(user))
-    return ok({
-        "user": _public_user(user),
-        "accessToken": create_access_token(user["id"]),
-        "refreshToken": create_refresh_token(user["id"]),
-    }, "Google login successful")
+
+    access_jwt = create_access_token(user["id"])
+    refresh_jwt = create_refresh_token(user["id"])
+
+    params = {
+        "accessToken": access_jwt,
+        "refreshToken": refresh_jwt,
+        "isNewUser": "true" if is_new_user else "false",
+    }
+    target = (f"{frontend}/auth/google/callback?"
+              + urllib.parse.urlencode(params)) if frontend else \
+        f"/auth/google/callback?{urllib.parse.urlencode(params)}"
+    return RedirectResponse(target, status_code=302)
 
 
 @router.post("/refresh")
