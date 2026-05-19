@@ -137,7 +137,8 @@ async def user_detail(user_id: str):
         {"userId": user_id}, {"_id": 0}, sort=[("createdAt", -1)])
     inv = await db.invoices.find({"userId": user_id}, {"_id": 0}).to_list(100)
     sites = await db.sites.find(
-        {"userId": user_id, "deleted": {"$ne": True}}, {"_id": 0}).to_list(100)
+        {"userId": user_id, "deleted": {"$ne": True}},
+        {"_id": 0, "apiKey": 0}).to_list(100)
     social = await db.social_accounts.find(
         {"userId": user_id},
         {"_id": 0, "accessToken": 0, "refreshToken": 0}).to_list(100)

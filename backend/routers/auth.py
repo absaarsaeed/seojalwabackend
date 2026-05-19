@@ -15,6 +15,7 @@ from core.security import (
     hash_password, utcnow_iso, verify_password,
 )
 import os
+from routers.sites import clean_website_url, create_site_from_url
 from services import email, mocks
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -61,11 +62,13 @@ async def register(body: RegisterReq):
         raise APIError("Email already registered", "EMAIL_TAKEN", 409)
     user_id = str(uuid.uuid4())
     verify_token = uuid.uuid4().hex
+    cleaned_url = clean_website_url(body.websiteUrl) if body.websiteUrl else ""
     doc = {
         "id": user_id,
         "email": body.email.lower(),
         "password": hash_password(body.password),
         "fullName": body.fullName,
+        "websiteUrl": cleaned_url,
         "profilePhoto": None, "googleId": None,
         "emailVerified": False, "emailVerifyToken": verify_token,
         "resetPasswordToken": None, "resetPasswordExpiry": None,
@@ -75,15 +78,13 @@ async def register(body: RegisterReq):
     }
     await db.users.insert_one(dict(doc))
 
-    if body.websiteUrl:
-        site_id = str(uuid.uuid4())
-        await db.sites.insert_one({
-            "id": site_id, "userId": user_id,
-            "name": body.websiteUrl, "url": body.websiteUrl,
-            "platform": "OTHER", "isActive": True,
-            "apiKey": uuid.uuid4().hex, "wordpressConnected": False,
-            "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
-        })
+    sites: list[dict] = []
+    if cleaned_url:
+        try:
+            site = await create_site_from_url(user_id, cleaned_url)
+            sites.append(site)
+        except APIError:
+            pass  # Don't block signup if URL fails validation
 
     await email.welcome_email(
         user_name=body.fullName,
@@ -95,6 +96,7 @@ async def register(body: RegisterReq):
         "user": _public_user(doc),
         "accessToken": create_access_token(user_id),
         "refreshToken": create_refresh_token(user_id),
+        "sites": sites,
     }, "Registration successful")
 
 
@@ -212,5 +214,15 @@ async def me(user=Depends(get_current_user)):
     sites = await db.sites.find(
         {"userId": user["id"], "deleted": {"$ne": True}},
         {"_id": 0}).to_list(100)
+
+    # Auto-migrate: legacy users who signed up with a websiteUrl but have
+    # no Site record yet — create one on first /me call after the fix.
+    if not sites and (user.get("websiteUrl") or "").strip():
+        try:
+            site = await create_site_from_url(user["id"], user["websiteUrl"])
+            sites = [site]
+        except APIError:
+            sites = []
+
     return ok({"user": user, "subscription": subscription, "sites": sites},
               "Current user")

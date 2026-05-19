@@ -1,6 +1,10 @@
 """Sites & CMS connections."""
+import re
+import secrets
+import string
 import uuid
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -15,6 +19,59 @@ router = APIRouter(prefix="/sites", tags=["sites"])
 
 PLATFORMS = {"WORDPRESS", "SHOPIFY", "WEBFLOW", "GHOST", "WIX", "SQUARESPACE",
              "NEXTJS", "NOTION", "HUBSPOT", "OTHER"}
+
+_API_KEY_ALPHABET = string.ascii_letters + string.digits
+
+
+def generate_site_api_key() -> str:
+    """Format: jalwa_live_<32 random alphanumeric chars>."""
+    suffix = "".join(secrets.choice(_API_KEY_ALPHABET) for _ in range(32))
+    return f"jalwa_live_{suffix}"
+
+
+def clean_website_url(raw: str) -> str:
+    """Ensure https:// prefix and strip trailing slash + whitespace."""
+    if not raw:
+        return ""
+    url = raw.strip()
+    # Remove any internal whitespace that might have slipped in from forms
+    url = re.sub(r"\s+", "", url)
+    if not url:
+        return ""
+    if not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        url = "https://" + url
+    return url.rstrip("/")
+
+
+def extract_domain(url: str) -> str:
+    """Return host without scheme/path/www., e.g. 'maternityfeed.com'."""
+    try:
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+        host = (parsed.netloc or parsed.path or "").lower()
+    except Exception:
+        host = url.lower()
+    host = host.split("/")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return host or url
+
+
+async def create_site_from_url(user_id: str, raw_url: str) -> dict:
+    """Build & insert a Site record from a raw website URL. Returns the doc."""
+    cleaned = clean_website_url(raw_url)
+    if not cleaned:
+        raise APIError("Invalid website URL", "INVALID_URL", 400)
+    name = extract_domain(cleaned) or cleaned
+    site = {
+        "id": str(uuid.uuid4()), "userId": user_id,
+        "name": name, "url": cleaned, "platform": "WORDPRESS",
+        "isActive": True, "apiKey": generate_site_api_key(),
+        "wordpressConnected": False,
+        "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
+    }
+    await get_db().sites.insert_one(dict(site))
+    site.pop("_id", None)
+    return site
 
 
 class SiteCreate(BaseModel):
@@ -59,13 +116,33 @@ async def create_site(body: SiteCreate, user=Depends(get_current_user)):
     site = {
         "id": str(uuid.uuid4()), "userId": user["id"],
         "name": body.name, "url": body.url, "platform": body.platform,
-        "isActive": True, "apiKey": uuid.uuid4().hex,
+        "isActive": True, "apiKey": generate_site_api_key(),
         "wordpressConnected": False,
         "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
     }
     await get_db().sites.insert_one(dict(site))
     site.pop("_id", None)
     return created(site, "Site created")
+
+
+@router.post("/migrate-from-profile")
+async def migrate_from_profile(user=Depends(get_current_user)):
+    """One-shot migration: create a Site from user.websiteUrl if missing."""
+    db = get_db()
+    existing = await db.sites.find(
+        {"userId": user["id"], "deleted": {"$ne": True}},
+        {"_id": 0}).to_list(500)
+    if existing:
+        return ok({"created": False, "sites": existing,
+                   "site": existing[0]},
+                  f"{len(existing)} site(s) already exist")
+    website_url = (user.get("websiteUrl") or "").strip()
+    if not website_url:
+        return ok({"created": False, "site": None},
+                  "User has no websiteUrl on profile")
+    site = await create_site_from_url(user["id"], website_url)
+    return ok({"created": True, "site": site, "sites": [site]},
+              "Site created from profile websiteUrl")
 
 
 @router.get("/{site_id}")
