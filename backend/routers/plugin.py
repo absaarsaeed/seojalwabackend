@@ -91,28 +91,43 @@ async def track(body: TrackReq,
 
 
 # ---------------------------------------------------------------- version
+DEFAULT_PLUGIN_SETTINGS = {
+    "plugin_version": "1.0.0",
+    "plugin_download_url": "PLACEHOLDER_UPDATE_FROM_ADMIN",
+    "plugin_changelog": ("Initial release. Automatic daily article "
+                         "publishing, SEO optimization, and WordPress "
+                         "integration."),
+}
+
+
+async def _plugin_setting(key: str) -> str:
+    """Fetch a plugin setting from the `settings` collection (key/value)."""
+    doc = await get_db().settings.find_one({"key": key}, {"_id": 0})
+    if doc and doc.get("value") not in (None, ""):
+        return doc["value"]
+    # Lazy-seed default so the admin can edit it later
+    default = DEFAULT_PLUGIN_SETTINGS.get(key, "")
+    if default:
+        await get_db().settings.update_one(
+            {"key": key},
+            {"$set": {"key": key, "value": default,
+                      "updatedAt": utcnow_iso()}},
+            upsert=True)
+    return default
+
+
 @router.get("/version")
 async def plugin_version():
     """Public — used by the WordPress plugin's update-check transient."""
-    db = get_db()
-    rec = await db.settings.find_one({"id": "plugin_version"}, {"_id": 0})
-    if not rec:
-        rec = {
-            "id": "plugin_version",
-            "version": "1.0.0",
-            "min_wp_version": "5.0",
-            "min_php_version": "7.4",
-            "changelog": "Initial release",
-            "download_url": "https://seojalwa.com/plugin/seojalwa-latest.zip",
-            "released_at": "2026-05-19",
-        }
-        await db.settings.insert_one(dict(rec))
-    rec.pop("_id", None)
+    version = await _plugin_setting("plugin_version")
+    download_url = await _plugin_setting("plugin_download_url")
+    changelog = await _plugin_setting("plugin_changelog")
     return ok({
-        "version": rec.get("version", "1.0.0"),
-        "min_wp_version": rec.get("min_wp_version", "5.0"),
-        "min_php_version": rec.get("min_php_version", "7.4"),
-        "changelog": rec.get("changelog", ""),
-        "download_url": rec.get("download_url", ""),
-        "released_at": rec.get("released_at", ""),
+        "version": version or "1.0.0",
+        "download_url": download_url if download_url
+        and download_url != "PLACEHOLDER_UPDATE_FROM_ADMIN" else "",
+        "changelog": changelog or "",
+        "min_wp_version": "5.0",
+        "min_php_version": "7.4",
+        "released_at": "2026-05-19",
     })

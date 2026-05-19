@@ -32,6 +32,38 @@ class SettingsBody(BaseModel):
     instagramUrl: Optional[str] = None
     maintenanceMode: Optional[bool] = None
     maintenanceMessage: Optional[str] = None
+    # Plugin distribution settings (stored as separate key/value docs)
+    pluginVersion: Optional[str] = None
+    pluginDownloadUrl: Optional[str] = None
+    pluginChangelog: Optional[str] = None
+
+
+# Mapping: API field → settings collection key/value record
+_PLUGIN_FIELD_MAP = {
+    "pluginVersion": "plugin_version",
+    "pluginDownloadUrl": "plugin_download_url",
+    "pluginChangelog": "plugin_changelog",
+}
+
+
+async def _read_plugin_settings() -> dict:
+    db = get_db()
+    out: dict = {}
+    for api_field, doc_key in _PLUGIN_FIELD_MAP.items():
+        doc = await db.settings.find_one({"key": doc_key}, {"_id": 0})
+        out[api_field] = (doc or {}).get("value", "")
+    return out
+
+
+async def _save_plugin_settings(values: dict) -> None:
+    db = get_db()
+    for api_field, doc_key in _PLUGIN_FIELD_MAP.items():
+        if api_field in values:
+            await db.settings.update_one(
+                {"key": doc_key},
+                {"$set": {"key": doc_key, "value": values[api_field],
+                          "updatedAt": utcnow_iso()}},
+                upsert=True)
 
 
 class PasswordBody(BaseModel):
@@ -47,20 +79,34 @@ async def get_settings():
                "createdAt": utcnow_iso(), "updatedAt": utcnow_iso()}
         await get_db().settings.insert_one(dict(doc))
         doc.pop("_id", None)
+    # Merge plugin settings (stored as separate key/value docs)
+    doc.update(await _read_plugin_settings())
     return ok(doc)
 
 
 @router.put("")
 async def update_settings(body: SettingsBody):
-    upd = {k: v for k, v in body.model_dump(exclude_none=True).items()}
-    upd["updatedAt"] = utcnow_iso()
-    existing = await get_db().settings.find_one({"id": "general"}, {"_id": 0})
-    if existing:
-        await get_db().settings.update_one({"id": "general"}, {"$set": upd})
-    else:
-        await get_db().settings.insert_one(
-            {"id": "general", **DEFAULT_SETTINGS, **upd,
-             "createdAt": utcnow_iso()})
+    all_fields = body.model_dump(exclude_none=True)
+    plugin_fields = {k: v for k, v in all_fields.items()
+                     if k in _PLUGIN_FIELD_MAP}
+    general_fields = {k: v for k, v in all_fields.items()
+                      if k not in _PLUGIN_FIELD_MAP}
+
+    if general_fields:
+        general_fields["updatedAt"] = utcnow_iso()
+        existing = await get_db().settings.find_one(
+            {"id": "general"}, {"_id": 0})
+        if existing:
+            await get_db().settings.update_one(
+                {"id": "general"}, {"$set": general_fields})
+        else:
+            await get_db().settings.insert_one(
+                {"id": "general", **DEFAULT_SETTINGS, **general_fields,
+                 "createdAt": utcnow_iso()})
+
+    if plugin_fields:
+        await _save_plugin_settings(plugin_fields)
+
     return ok({"updated": True})
 
 

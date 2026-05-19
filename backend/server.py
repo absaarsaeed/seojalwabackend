@@ -33,6 +33,7 @@ from routers.admin import (analytics as admin_analytics,  # noqa: E402
                             blog as admin_blog,
                             coupons as admin_coupons,
                             plans as admin_plans,
+                            plugin as admin_plugin,
                             settings as admin_settings,
                             users as admin_users)
 
@@ -147,3 +148,4 @@ app.include_router(admin_announcements.router, prefix=PREFIX)
 app.include_router(admin_analytics.router, prefix=PREFIX)
 app.include_router(admin_api_keys.router, prefix=PREFIX)
 app.include_router(admin_settings.router, prefix=PREFIX)
+app.include_router(admin_plugin.router, prefix=PREFIX)
