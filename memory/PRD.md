@@ -110,3 +110,44 @@ The original spec asked for Node + Express + PostgreSQL + Prisma. Per user choic
 - `/app/backend/services/` — llm (real), api_keys (DB cache), mocks (all stubs), jobs
 - `/app/backend/routers/` — 16 user routers + 10 admin routers
 - `/app/memory/test_credentials.md` — admin + test-user creds
+
+## Phase 1 — 2026-05-19
+
+**Status: COMPLETE. 77/79 backend tests pass (zero regressions vs Phase 0 baseline of 57/57).**
+
+### Real integrations wired
+- **SendGrid** (replaced Resend everywhere) — 8 transactional HTML templates: welcome, verify, password_reset, article_published, weekly_digest, team_invite, announcement, payment_failed
+- **OpenAI GPT-4o article generation** — strict-JSON output, deterministic 0-100 SEO score, brand-voice context injection
+- **DALL-E 3** hero images (1792x1024) → re-uploaded to Cloudflare R2
+- **Cloudflare R2** via boto3 (`upload_file`, `delete_file`, `get_signed_url`, `download_to_r2`)
+- **WordPress REST** real publisher (Yoast meta + featured-media upload)
+- **AI Visibility 5-model scan**: real OpenAI (gpt-4o-mini), Perplexity, Gemini (1.5-flash), Claude (Haiku); Copilot derived (no public API)
+- **Google Search Console** OAuth + searchanalytics().query() with real article-clicks back-fill
+- **Brand voice training** — URL → BeautifulSoup → GPT-4o style profile (tone/formality/playfulness/technicality/sentenceLength/vocabulary/characteristicPhrases/thingsToAvoid/writingPersona)
+- **Real Growth Score** algorithm (AI 30% / SEO 25% / Social 25% / Traffic 20%)
+- **New GSC routes**: GET /api/analytics/gsc/connect, GET /api/analytics/gsc/callback
+- **Weekly digest cron** (Monday 08:05 UTC)
+- **Admin api-key /test** now does real pings to OpenAI / SendGrid / R2 / Perplexity / Gemini / Anthropic / Google with `latency_ms`
+
+### Still mocked (Phase 2 backlog)
+- LemonSqueezy checkout/webhook/refund
+- DataForSEO keyword research
+- Webflow/Ghost/HubSpot/Wix/Notion CMS publishers
+- All 6 social publishers (IG/FB/LinkedIn/Twitter/Pinterest/YouTube)
+- Google OAuth login (POST /api/auth/google) — GSC OAuth is real
+- Microsoft Copilot scan (no public API — derived)
+
+### Known minor issues (carried from Phase 0)
+1. In-memory rate-limit/admin-lockout key on `request.client.host` (ingress IP). Move to Redis + honour `X-Forwarded-For` for multi-pod scaling.
+2. `RequestValidationError` handler short-circuits before rate-limit dep on the public AI-visibility demo. Either move rate-limit to a higher-priority Request-only dep, or accept and document.
+
+### New env vars (also in `.env.example`)
+SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME,
+R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_URL,
+GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI,
+PERPLEXITY_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY.
+
+`RESEND_API_KEY` is gone.
+
+### New pip packages
+sendgrid, boto3, google-auth, google-auth-oauthlib, google-auth-httplib2, google-api-python-client, google-generativeai, anthropic, beautifulsoup4, httpx.
