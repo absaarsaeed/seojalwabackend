@@ -1,20 +1,55 @@
-"""Real AI Visibility scanning — queries ChatGPT, Perplexity, Gemini, Claude
-(Copilot is derived from the average ± variance until Microsoft exposes an API).
+"""Real AI Visibility scanning — queries ChatGPT, Perplexity, Gemini, Claude.
+
+When the real provider's API key is not configured (or the real call fails),
+the model is simulated by GPT-4o using a persona system prompt so the scan
+always returns 5 model scores. Each per-model result carries a
+`simulated: bool` flag and a `note` so the UI can label simulated rows.
+
+Copilot is always simulated (no public Microsoft API).
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
-import random
 import re
 from typing import Optional
 
 import httpx
 
-from services.llm import chat_completion, _api_key as openai_key
+from services.llm import chat_completion, _api_key as openai_key  # noqa: F401
 
 logger = logging.getLogger("jalwa.ai_visibility")
+
+
+_SIMULATION_NOTE = "Simulated via GPT-4o (real key not configured)"
+
+
+# ============================================================================
+# GPT-4o simulation fallback — used when a model's real API key is missing
+# ============================================================================
+_MODEL_PERSONAS = {
+    "chatgpt": "ChatGPT (OpenAI GPT-4o)",
+    "perplexity": "Perplexity AI (the answer engine with cited web sources)",
+    "gemini": "Google Gemini (Google's multimodal AI assistant)",
+    "claude": "Anthropic Claude (a thoughtful, helpful assistant)",
+    "copilot": "Microsoft Copilot (Bing-powered conversational AI)",
+}
+
+
+async def _simulate_via_gpt4o(model_name: str, query: str) -> str:
+    """Use GPT-4o to roleplay how `model_name` would answer `query`."""
+    persona = _MODEL_PERSONAS.get(model_name.lower(), model_name)
+    sys = (
+        f"You are simulating how {persona} would respond to questions "
+        f"about brands. Answer as {persona} would, based on your knowledge "
+        f"of how that AI system typically responds. Keep the answer concise "
+        f"and mention specific businesses by name when relevant.")
+    try:
+        return await chat_completion(sys, query, model="gpt-4o")
+    except Exception as e:
+        logger.warning("gpt-4o simulation failed for %s: %s", model_name, e)
+        return ""
 
 
 # ---------------------------------------------------------------- Perplexity
@@ -108,14 +143,14 @@ async def _generate_queries(site_url: str, site_name: str) -> list[str]:
             return [str(q).strip() for q in arr if str(q).strip()][:20]
         except Exception:
             pass
-    # Fallback deterministic queries
+    # Fallback deterministic queries — 25 to cover 5 models × 5 queries
     return [
         f"best alternatives to {site_name}",
         f"is {site_name} worth it",
         f"{site_name} vs competitors",
         f"how does {site_name} work",
         f"reviews of {site_name}",
-    ] * 4
+    ] * 5
 
 
 # ---------------------------------------------------------- Scoring & sentiment
@@ -176,12 +211,32 @@ async def _recommendations(site_url: str, results: dict) -> list[dict]:
 
 
 # ------------------------------------------------------ Per-model scan runner
-async def _run_model_scan(name: str, query_fn, queries: list[str],
+async def _real_or_simulated(model_name: str, real_fn,
+                             query: str) -> tuple[str, bool]:
+    """Returns (text, simulated). Falls back to GPT-4o simulation when the
+    real provider returns empty (no key configured / error)."""
+    if real_fn is not None:
+        text = await real_fn(query)
+        if text:
+            return text, False
+    # Either no real_fn (Copilot) or real call returned empty → simulate
+    text = await _simulate_via_gpt4o(model_name, query)
+    return text, True
+
+
+async def _run_model_scan(name: str, real_fn, queries: list[str],
                           site_name: str, site_url: str) -> dict:
+    # Defensive: if upstream supplied no queries for this model, fall back to
+    # a generic prompt so the model still contributes a score.
+    if not queries:
+        queries = [f"What do you know about {site_name} ({site_url})?"]
     mentions = 0
     sentiments: list[str] = []
+    any_simulated = False
     for q in queries[:5]:
-        text = await query_fn(q)
+        text, simulated = await _real_or_simulated(name, real_fn, q)
+        if simulated:
+            any_simulated = True
         if _detect_mention(text, site_name, site_url):
             mentions += 1
         sentiments.append(_sentiment(text, site_name))
@@ -190,7 +245,11 @@ async def _run_model_scan(name: str, query_fn, queries: list[str],
     counts = {s: sentiments.count(s) for s in set(sentiments)}
     counts.pop("NOT_MENTIONED", None)
     sentiment = max(counts, key=counts.get) if counts else "NOT_MENTIONED"
-    return {"score": score, "sentiment": sentiment, "mentions": mentions}
+    out: dict = {"score": score, "sentiment": sentiment,
+                 "mentions": mentions, "simulated": any_simulated}
+    if any_simulated:
+        out["note"] = _SIMULATION_NOTE
+    return out
 
 
 # =========================================================== PUBLIC API
@@ -200,9 +259,9 @@ async def run_scan(site: dict) -> dict:
     site_name = site.get("name") or site_url
 
     queries = await _generate_queries(site_url, site_name)
-    # Split into 5 chunks of 5 (last one for Copilot share)
-    chunks = [queries[i * 5:(i + 1) * 5] for i in range(4)]
-    while len(chunks) < 4:
+    # Split into 5 chunks of 5 (one per model)
+    chunks = [queries[i * 5:(i + 1) * 5] for i in range(5)]
+    while len(chunks) < 5:
         chunks.append(queries[:5])
 
     chatgpt = await _run_model_scan("chatgpt", _query_chatgpt, chunks[0],
@@ -213,15 +272,9 @@ async def run_scan(site: dict) -> dict:
                                    site_name, site_url)
     claude = await _run_model_scan("claude", _query_claude, chunks[3],
                                    site_name, site_url)
-
-    # Copilot — derived (no public API). TODO: replace when MS exposes one.
-    other_avg = (chatgpt["score"] + perplexity["score"]
-                 + gemini["score"] + claude["score"]) // 4
-    copilot_score = max(0, min(100, other_avg + random.randint(-10, 10)))
-    copilot_sentiment = max(
-        ("POSITIVE", "NEUTRAL", "NEGATIVE", "NOT_MENTIONED"),
-        key=lambda s: sum(1 for m in (chatgpt, perplexity, gemini, claude)
-                          if m["sentiment"] == s))
+    # Copilot has no public API — always simulated via GPT-4o
+    copilot = await _run_model_scan("copilot", None, chunks[4],
+                                    site_name, site_url)
 
     # Weighted overall: 30/25/20/15/10
     overall = int(round(
@@ -229,14 +282,12 @@ async def run_scan(site: dict) -> dict:
         + perplexity["score"] * 0.25
         + gemini["score"] * 0.20
         + claude["score"] * 0.15
-        + copilot_score * 0.10
+        + copilot["score"] * 0.10
     ))
 
     results = {
         "chatgpt": chatgpt, "perplexity": perplexity, "gemini": gemini,
-        "claude": claude,
-        "copilot": {"score": copilot_score, "sentiment": copilot_sentiment,
-                    "note": "Derived — no public Copilot API"},
+        "claude": claude, "copilot": copilot,
     }
     recs = await _recommendations(site_url, results)
 
@@ -246,12 +297,12 @@ async def run_scan(site: dict) -> dict:
         "perplexityScore": perplexity["score"],
         "geminiScore": gemini["score"],
         "claudeScore": claude["score"],
-        "copilotScore": copilot_score,
+        "copilotScore": copilot["score"],
         "chatgptSentiment": chatgpt["sentiment"],
         "perplexitySentiment": perplexity["sentiment"],
         "geminiSentiment": gemini["sentiment"],
         "claudeSentiment": claude["sentiment"],
-        "copilotSentiment": copilot_sentiment,
+        "copilotSentiment": copilot["sentiment"],
         "recommendations": recs,
         "rawResults": results,
         "queries": queries,
