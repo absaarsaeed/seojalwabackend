@@ -314,11 +314,9 @@ async def score_against_voice(content: str, brand_voice: dict | None) -> dict:
 
 
 # ---------- Image generation ----------
-# DALL-E image generation via emergentintegrations is not exposed in this
-# environment's LlmChat. We provide a clean interface and return a placeholder
-# URL. TODO: replace with real DALL-E call when image API is available.
+# Legacy placeholder used by social-post generation. Real DALL-E 3 hero images
+# are produced via `generate_hero_image` above using the openai package.
 async def generate_image(prompt: str, size: str = "1024x1024") -> str:
     logger.info("Image gen requested: %s", prompt[:80])
-    # TODO: when DALL-E 3 is wired up, call OpenAI Images API and upload to R2.
     seed = abs(hash(prompt)) % 100000
     return f"https://picsum.photos/seed/{seed}/1024/1024"

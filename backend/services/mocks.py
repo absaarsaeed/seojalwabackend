@@ -169,11 +169,9 @@ async def social_exchange_code(platform: str, code: str) -> dict:
 # ============================================================================
 # AI VISIBILITY — 5 models (ChatGPT, Perplexity, Gemini, Claude, Copilot)
 # ----------------------------------------------------------------------------
-# TODO: ChatGPT — call via emergentintegrations LlmChat (already wired)
-# TODO: Perplexity — POST https://api.perplexity.ai/chat/completions
-# TODO: Gemini — google-generativeai
-# TODO: Claude — anthropic Python SDK
-# TODO: Copilot — no public API; use Bing Search API as proxy
+# Real implementations live in services/ai_visibility.py using the
+# openai, anthropic, google-generativeai, and perplexity httpx clients.
+# Copilot remains derived (no public API).
 # ============================================================================
 async def query_ai_models(brand: str, queries: list[str]) -> dict:
     """Returns per-model score 0-100 and sentiment."""
