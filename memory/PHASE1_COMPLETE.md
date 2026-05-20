@@ -400,3 +400,68 @@ Host `seojalwa.zip` at `https://seojalwa.com/plugin/seojalwa-latest.zip`
 chosen CDN). The user downloads the zip, uploads it via **Plugins → Add
 New → Upload Plugin**, then enters their SEO Jalwa **Site API Key** under
 **Settings → SEO Jalwa**.
+
+---
+
+## 10 · Phase 1 Finalisation (2026-05-20)
+
+### Shipped in this pass
+1. **Subscription lifecycle (FIX 1).** `POST /api/auth/register` now
+   auto-creates a 14-day `TRIALING` subscription on the cheapest plan
+   (defaults to `Starter`). `/api/auth/me` enriches subscription with the
+   populated `plan` object. **`PUT /api/admin/users/{userId}/subscription`**
+   (new) accepts `{planId, status, billingInterval, trialDays, adminNote}`
+   with full transition logic (TRIALING/ACTIVE/CANCELLED/PAST_DUE/EXPIRED),
+   automatically recomputes `currentPeriodEnd` (30/365 days), notifies the
+   user by email, and writes to the audit log.
+2. **Plan-limit enforcement (FIX 2).** New `core/plan_limits.py` with
+   `check_article_limit`, `check_ai_scan_limit`, `check_social_limit`.
+   `POST /api/articles/generate` now enforces the user's `articlesPerMonth`
+   and returns `code=LIMIT_REACHED` with `meta={resource, used, limit,
+   upgrade_url}` (also threaded as a new `meta` field on the unified error
+   envelope via `APIError(meta=…)`).
+3. **Admin audit log (FIX 3).** New `core/audit.py` writer +
+   `GET /api/admin/audit-log` (paginated, filterable by `action`/`target_id`).
+   `USER_PLAN_CHANGED`, `USER_STATUS_CHANGED`, `ANNOUNCEMENT_SENT` already
+   emit entries; remaining actions are documented for future passes.
+4. **In-app notifications (FIX 8).** New `notifications` collection +
+   `services/notifications.create_notification` writer. User endpoints
+   `GET /api/notifications`, `GET /api/notifications/unread-count`,
+   `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`.
+   Article jobs now create `ARTICLE_PUBLISHED` / `ARTICLE_FAILED`
+   notifications on completion/failure.
+5. **Real dashboard metrics (FIX 12).** `GET /api/admin/dashboard/stats`
+   now returns `ARR`, `churnThisMonth` as a real percentage,
+   `articlesGeneratedToday`, `articlesGeneratedThisMonth`, `scansRunToday`,
+   `emailsSentToday`. All derived from real DB queries.
+6. **Announcements broadcast (FIX 17).** `POST /api/admin/announcements`
+   now supports `channel=IN_APP|EMAIL|BOTH`, creating one `ANNOUNCEMENT`
+   notification per recipient and tracking `emailsSent` and
+   `notificationsCreated` in the response.
+7. **WordPress plugin debugging (FIX 18).** `POST /api/plugin/verify` now
+   accepts an optional `{siteUrl}` body, returns specific error codes
+   (`INVALID_API_KEY`, `SITE_URL_MISMATCH`, `PLUGIN_UNAUTHORIZED`), and
+   logs the last 4 characters of every received key for trace.
+
+### Verified live
+- `Phase-1 smoke suite still passes 29/29` (zero regressions).
+- All 7 new flows green via curl (response excerpts in chat log).
+
+### Deferred to Phase 2 (intentionally not shipped this pass)
+- **FIX 4** Full user activity log collection (currently we have admin
+  audit + dashboard activity feed; per-user activity log endpoint is
+  scaffolded but not exposed).
+- **FIX 5** Email log collection + admin viewer (`emailsSentToday` reads
+  from the collection if/when it exists; writer hook is not yet wired).
+- **FIX 6** Editable email templates in DB (current templates remain
+  hardcoded in `services/email.py`; 15-template seed + CRUD endpoints are
+  planned).
+- **FIX 7** Renewal reminder cron + `renewal_reminder_days` setting.
+- **FIX 9** Full cascade delete on `DELETE /api/admin/users/{id}` (only
+  drops the user record today — sites/articles/etc remain orphaned).
+- **FIX 10** `/feedback` + `submissions` collection.
+- **FIX 11** GPT-4o retention insights endpoint.
+- **FIX 13, 14** Admin analytics + billing overview endpoints exist but
+  some fields still source from `analytics` mocks.
+- **FIX 15, 16** Coupon/blog CRUD endpoints exist; "apply coupon" UX flow
+  still needs LemonSqueezy hand-off.

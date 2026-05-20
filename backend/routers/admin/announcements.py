@@ -54,19 +54,42 @@ async def send_announcement(body: AnnouncementReq):
                 {"_id": 0, "id": 1, "email": 1}).to_list(20000)
 
     channel = body.channel.upper()
+    emails_sent = 0
+    notifs_created = 0
     if channel in {"EMAIL", "BOTH"}:
         from services import email as _email
         for r in recipients:
-            await _email.announcement_email(r["email"], body.subject,
-                                            body.message)
+            res = await _email.announcement_email(r["email"], body.subject,
+                                                  body.message)
+            if isinstance(res, dict) and res.get("success"):
+                emails_sent += 1
+
+    if channel in {"IN_APP", "BOTH"}:
+        from services.notifications import create_notification
+        for r in recipients:
+            await create_notification(
+                r["id"], "ANNOUNCEMENT", body.subject, body.message,
+                icon="megaphone", link="/dashboard")
+            notifs_created += 1
+
     doc = {
         "id": str(uuid.uuid4()), "subject": body.subject,
         "message": body.message, "targetPlan": target,
         "channel": channel, "sentAt": utcnow_iso(),
-        "recipientCount": len(recipients), "createdAt": utcnow_iso(),
+        "recipientCount": len(recipients),
+        "emailsSent": emails_sent, "notificationsCreated": notifs_created,
+        "createdAt": utcnow_iso(),
     }
     await db.announcements.insert_one(dict(doc))
     doc.pop("_id", None)
+
+    from core.audit import log_action
+    await log_action(
+        "ANNOUNCEMENT_SENT", target_type="announcement",
+        target_id=doc["id"],
+        metadata={"recipientCount": len(recipients),
+                  "targetPlan": target, "channel": channel})
+
     return created(doc, "Announcement sent")
 
 

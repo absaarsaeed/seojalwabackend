@@ -99,6 +99,16 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
         await _update_job(job_id, status="completed", progress=100,
                           result={"articleId": article_id,
                                   "seoScore": gen["seoScore"]})
+        # In-app notification: article ready
+        try:
+            from services.notifications import create_notification
+            await create_notification(
+                user_id, "ARTICLE_PUBLISHED",
+                f"Article ready: {gen['title']}",
+                f"SEO score {gen['seoScore']}/100. Open it from your dashboard.",
+                icon="file-text", link=f"/dashboard/articles/{article_id}")
+        except Exception:
+            pass
 
         # Auto-publish if enabled and CMS connected
         if settings.get("autoPublish", True):
@@ -141,6 +151,14 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
         await _update_job(job_id, status="failed", error=str(e))
         await db.articles.update_one(
             {"id": article_id}, {"$set": {"status": "FAILED"}})
+        try:
+            from services.notifications import create_notification
+            await create_notification(
+                user_id, "ARTICLE_FAILED",
+                f"Article generation failed for '{search_term}'",
+                str(e)[:200], icon="alert-triangle", link="/dashboard")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------- social post gen

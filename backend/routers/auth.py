@@ -119,6 +119,28 @@ async def register(body: RegisterReq):
         except APIError:
             pass  # Don't block signup if URL fails validation
 
+    # Auto-create a 14-day trial subscription on the cheapest plan (if any)
+    try:
+        starter = await db.plans.find_one(
+            {"isActive": {"$ne": False}}, {"_id": 0},
+            sort=[("monthlyPrice", 1)])
+        if starter:
+            now_dt = datetime.now(timezone.utc)
+            trial_end = (now_dt + timedelta(days=14)).isoformat()
+            await db.subscriptions.insert_one({
+                "id": str(uuid.uuid4()), "userId": user_id,
+                "planId": starter["id"], "status": "TRIALING",
+                "billingInterval": "MONTHLY",
+                "currentPeriodStart": now_dt.isoformat(),
+                "currentPeriodEnd": trial_end,
+                "trialEndsAt": trial_end,
+                "cancelAtPeriodEnd": False,
+                "source": "MANUAL",
+                "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
+            })
+    except Exception:
+        pass  # Don't block signup if sub creation fails
+
     await email.welcome_email(
         user_name=body.fullName,
         to=body.email,

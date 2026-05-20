@@ -16,22 +16,26 @@ def created(data: Any = None, message: str = "Created"):
     return ok(data=data, message=message, status_code=201)
 
 
-def error(message: str, code: str = "ERROR", status_code: int = 400):
-    return JSONResponse(
-        status_code=status_code,
-        content={"success": False, "error": message, "code": code,
-                 "statusCode": status_code},
-    )
+def error(message: str, code: str = "ERROR", status_code: int = 400,
+          meta: Optional[dict] = None):
+    payload: dict = {"success": False, "error": message, "code": code,
+                     "statusCode": status_code}
+    if meta:
+        payload["meta"] = meta
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 class APIError(HTTPException):
-    def __init__(self, message: str, code: str = "ERROR", status_code: int = 400):
+    def __init__(self, message: str, code: str = "ERROR",
+                 status_code: int = 400,
+                 meta: Optional[dict] = None):
         super().__init__(status_code=status_code, detail=message)
         self.code = code
+        self.meta = meta or {}
 
 
 async def api_error_handler(request: Request, exc: APIError):
-    return error(exc.detail, exc.code, exc.status_code)
+    return error(exc.detail, exc.code, exc.status_code, exc.meta)
 
 
 async def http_error_handler(request: Request, exc: HTTPException):

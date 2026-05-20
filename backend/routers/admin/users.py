@@ -2,9 +2,10 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
+from core.audit import log_action
 from core.database import get_db
 from core.dependencies import get_admin_session
 from core.response import APIError, ok, paginate
@@ -28,6 +29,14 @@ class TrialReq(BaseModel):
 
 class NoteReq(BaseModel):
     note: str
+
+
+class SubscriptionUpdateReq(BaseModel):
+    planId: Optional[str] = None
+    status: Optional[str] = None
+    billingInterval: Optional[str] = None
+    trialDays: Optional[int] = None
+    adminNote: Optional[str] = None
 
 
 # ============================ DASHBOARD ===================================
@@ -68,15 +77,39 @@ async def stats():
     new_week = await db.users.count_documents({"createdAt": {"$gte": week_iso}})
     new_month = await db.users.count_documents({"createdAt": {"$gte": month_iso}})
 
+    # Additional real metrics
+    articles_today = await db.articles.count_documents({
+        "createdAt": {"$gte": today_iso}, "deleted": {"$ne": True}})
+    articles_month = await db.articles.count_documents({
+        "createdAt": {"$gte": month_iso}, "deleted": {"$ne": True}})
+    scans_today = await db.ai_visibility_scans.count_documents({
+        "createdAt": {"$gte": today_iso}})
+    emails_today = await db.email_logs.count_documents({
+        "sentAt": {"$gte": today_iso}}) if "email_logs" in (
+        await db.list_collection_names()) else 0
+
+    # Churn as a percentage of cohort active at month start
+    active_at_month_start = await db.subscriptions.count_documents({
+        "status": {"$in": ["ACTIVE", "TRIALING"]},
+        "createdAt": {"$lt": month_iso}})
+    churn_pct = (round(churn_month / active_at_month_start * 100, 2)
+                 if active_at_month_start else 0.0)
+
     return ok({
         "totalUsers": total_users,
         "paidUsers": paid_count,
         "freeUsers": total_users - paid_count,
         "MRR": round(mrr, 2),
-        "churnThisMonth": churn_month,
+        "ARR": round(mrr * 12, 2),
+        "churnThisMonth": churn_pct,
+        "churnCount": churn_month,
         "newSignupsToday": new_today,
         "newSignupsThisWeek": new_week,
         "newSignupsThisMonth": new_month,
+        "articlesGeneratedToday": articles_today,
+        "articlesGeneratedThisMonth": articles_month,
+        "scansRunToday": scans_today,
+        "emailsSentToday": emails_today,
         "planDistribution": plan_distribution,
     })
 
@@ -154,13 +187,14 @@ async def user_detail(user_id: str):
 
 @router.put("/users/{user_id}/plan",
             dependencies=[Depends(get_admin_session)])
-async def change_plan(user_id: str, body: PlanChangeReq):
+async def change_plan(user_id: str, body: PlanChangeReq, request: Request):
     db = get_db()
     plan = await db.plans.find_one({"id": body.planId}, {"_id": 0})
     if not plan:
         raise APIError("Plan not found", "NOT_FOUND", 404)
     sub = await db.subscriptions.find_one(
         {"userId": user_id}, {"_id": 0}, sort=[("createdAt", -1)])
+    old_plan_id = (sub or {}).get("planId")
     if sub:
         await db.subscriptions.update_one(
             {"id": sub["id"]},
@@ -182,7 +216,107 @@ async def change_plan(user_id: str, body: PlanChangeReq):
         await mocks.send_email(user["email"], "plan-changed",
                                f"You've been upgraded to {plan['name']}",
                                f"<p>You're now on the {plan['name']} plan.</p>")
+    await log_action(
+        "USER_PLAN_CHANGED", target_type="user", target_id=user_id,
+        ip_address=(request.client.host if request.client else ""),
+        changes={"planId": {"from": old_plan_id, "to": body.planId}})
     return ok({"updated": True})
+
+
+@router.put("/users/{user_id}/subscription",
+            dependencies=[Depends(get_admin_session)])
+async def update_subscription(user_id: str, body: SubscriptionUpdateReq,
+                              request: Request):
+    """Rich admin subscription update — plan + status + trial + interval."""
+    import uuid
+    db = get_db()
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise APIError("User not found", "NOT_FOUND", 404)
+
+    if body.planId:
+        plan = await db.plans.find_one({"id": body.planId}, {"_id": 0})
+        if not plan:
+            raise APIError("Plan not found", "NOT_FOUND", 404)
+
+    status = (body.status or "").upper() or None
+    if status and status not in {"TRIALING", "ACTIVE", "CANCELLED",
+                                 "PAST_DUE", "EXPIRED"}:
+        raise APIError("Invalid status", "INVALID", 400)
+
+    interval = (body.billingInterval or "").upper() or None
+    if interval and interval not in {"MONTHLY", "ANNUAL"}:
+        raise APIError("Invalid billingInterval", "INVALID", 400)
+
+    sub = await db.subscriptions.find_one(
+        {"userId": user_id}, {"_id": 0}, sort=[("createdAt", -1)])
+    now_dt = datetime.now(timezone.utc)
+    updates: dict = {"updatedAt": utcnow_iso(), "source": "MANUAL"}
+    if body.planId:
+        updates["planId"] = body.planId
+    if status:
+        updates["status"] = status
+    if interval:
+        updates["billingInterval"] = interval
+
+    if status == "TRIALING" and body.trialDays:
+        new_end = (now_dt + timedelta(days=body.trialDays)).isoformat()
+        updates["trialEndsAt"] = new_end
+        updates["currentPeriodStart"] = now_dt.isoformat()
+        updates["currentPeriodEnd"] = new_end
+    elif status == "ACTIVE":
+        days = 365 if interval == "ANNUAL" else 30
+        updates["currentPeriodStart"] = now_dt.isoformat()
+        updates["currentPeriodEnd"] = (
+            now_dt + timedelta(days=days)).isoformat()
+    elif status == "CANCELLED":
+        updates["cancelAtPeriodEnd"] = True
+        updates["cancelledAt"] = utcnow_iso()
+    if body.adminNote:
+        updates["adminNote"] = body.adminNote
+
+    if sub:
+        await db.subscriptions.update_one(
+            {"id": sub["id"]}, {"$set": updates})
+        sub_id = sub["id"]
+        changes = {k: {"from": sub.get(k), "to": v}
+                   for k, v in updates.items() if k != "updatedAt"}
+    else:
+        sub_id = str(uuid.uuid4())
+        doc = {"id": sub_id, "userId": user_id,
+               "status": status or "ACTIVE",
+               "billingInterval": interval or "MONTHLY",
+               "planId": body.planId, "cancelAtPeriodEnd": False,
+               "createdAt": utcnow_iso(), **updates}
+        await db.subscriptions.insert_one(dict(doc))
+        changes = {k: {"from": None, "to": v}
+                   for k, v in updates.items() if k != "updatedAt"}
+
+    # Notify the user
+    from services import email as _email
+    try:
+        await _email.announcement_email(
+            user["email"], "Your subscription has been updated",
+            "<p>Your SEO Jalwa subscription has been updated by our team. "
+            "Sign in to view the new plan details.</p>")
+    except Exception:
+        pass
+
+    # Audit
+    await log_action(
+        "USER_PLAN_CHANGED" if body.planId else "USER_STATUS_CHANGED",
+        target_type="subscription", target_id=user_id,
+        ip_address=(request.client.host if request.client else ""),
+        changes=changes,
+        metadata={"adminNote": body.adminNote or ""})
+
+    fresh = await db.subscriptions.find_one({"id": sub_id}, {"_id": 0})
+    plan = (await db.plans.find_one(
+        {"id": fresh.get("planId")}, {"_id": 0}) if fresh and fresh.get("planId")
+            else None)
+    if fresh and plan:
+        fresh["plan"] = plan
+    return ok({"subscription": fresh}, "Subscription updated")
 
 
 @router.put("/users/{user_id}/status",

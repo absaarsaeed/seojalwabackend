@@ -1,4 +1,5 @@
 """WordPress plugin API — called by the plugin, authenticated by X-Jalwa-API-Key header."""
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Header
@@ -10,15 +11,27 @@ from core.security import utcnow_iso
 
 router = APIRouter(prefix="/plugin", tags=["plugin"])
 
+logger = logging.getLogger("jalwa.plugin")
+
 
 async def _site_from_key(api_key: str | None) -> dict:
     if not api_key:
+        logger.warning("plugin auth: missing X-Jalwa-API-Key header")
         raise APIError("Missing API key", "PLUGIN_UNAUTHORIZED", 401)
+    suffix = api_key[-4:] if len(api_key) >= 4 else "***"
     site = await get_db().sites.find_one(
         {"apiKey": api_key, "deleted": {"$ne": True}}, {"_id": 0})
     if not site:
-        raise APIError("Invalid API key", "PLUGIN_UNAUTHORIZED", 401)
+        logger.warning("plugin auth: API key not recognised (...%s)", suffix)
+        raise APIError("API key not recognised. Re-issue the key from "
+                       "your dashboard.", "INVALID_API_KEY", 401)
+    logger.info("plugin auth ok: site=%s (key ...%s)",
+                site.get("name"), suffix)
     return site
+
+
+class VerifyReq(BaseModel):
+    siteUrl: str | None = None
 
 
 class ConfirmReq(BaseModel):
@@ -32,14 +45,35 @@ class TrackReq(BaseModel):
 
 
 @router.post("/verify")
-async def verify(x_jalwa_api_key: str | None = Header(None, alias="X-Jalwa-API-Key")):
+async def verify(
+    body: VerifyReq | None = None,
+    x_jalwa_api_key: str | None = Header(None, alias="X-Jalwa-API-Key"),
+):
     site = await _site_from_key(x_jalwa_api_key)
+    # Optional siteUrl check — guards against accidental cross-site key reuse
+    if body and body.siteUrl:
+        norm_supplied = body.siteUrl.rstrip("/").lower().replace(
+            "http://", "https://")
+        norm_stored = (site.get("url") or "").rstrip("/").lower().replace(
+            "http://", "https://")
+        # Allow either to be a substring of the other (handles www. + paths)
+        if (norm_supplied not in norm_stored
+                and norm_stored not in norm_supplied):
+            logger.warning(
+                "plugin verify: site URL mismatch (supplied=%s stored=%s)",
+                norm_supplied, norm_stored)
+            raise APIError(
+                "API key is registered to a different site. Re-issue the "
+                "key from your dashboard for this site.",
+                "SITE_URL_MISMATCH", 400)
+
     await get_db().sites.update_one(
         {"id": site["id"]},
         {"$set": {"wordpressConnected": True,
                   "lastSync": utcnow_iso(),
                   "updatedAt": utcnow_iso()}})
-    return ok({"valid": True, "siteName": site["name"], "userId": site["userId"]})
+    return ok({"valid": True, "siteName": site["name"],
+               "userId": site["userId"]})
 
 
 @router.post("/ping")

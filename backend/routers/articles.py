@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from core.database import get_db
 from core.dependencies import get_current_user
+from core.plan_limits import check_article_limit
 from core.response import APIError, created, ok, paginate
 from core.security import utcnow_iso
 from services import jobs, mocks
@@ -101,6 +102,8 @@ async def generate(body: GenerateReq, bg: BackgroundTasks,
                                    {"_id": 0})
     if not site:
         raise APIError("Site not found", "NOT_FOUND", 404)
+    # Enforce monthly article quota from the user's plan
+    usage = await check_article_limit(user["id"])
     article_id = str(uuid.uuid4())
     await db.articles.insert_one({
         "id": article_id, "siteId": body.siteId, "userId": user["id"],
@@ -114,7 +117,8 @@ async def generate(body: GenerateReq, bg: BackgroundTasks,
                                    {"articleId": article_id})
     bg.add_task(jobs.run_article_generation, job_id, article_id,
                 body.siteId, user["id"], body.searchTerm)
-    return ok({"jobId": job_id, "articleId": article_id, "status": "queued"})
+    return ok({"jobId": job_id, "articleId": article_id,
+               "status": "queued", "quota": usage})
 
 
 @router.get("/job/{job_id}")
