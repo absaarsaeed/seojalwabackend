@@ -90,6 +90,10 @@ class SEOJalwa_Settings {
                 </div>
             <?php endif; ?>
 
+            <div id="seojalwa-connectivity" class="seojalwa-banner" style="display:none">
+                <strong id="seojalwa-connectivity-text"></strong>
+            </div>
+
             <h2><?php esc_html_e( 'API Key', 'seojalwa' ); ?></h2>
             <table class="form-table" role="presentation">
                 <tr>

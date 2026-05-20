@@ -3,7 +3,7 @@
  * Plugin Name: SEO Jalwa
  * Plugin URI: https://seojalwa.com
  * Description: Connect your WordPress site to SEO Jalwa for automatic daily article publishing, SEO optimization, and AI-powered content generation.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: SEO Jalwa
  * Author URI: https://seojalwa.com
  * License: GPL v2 or later
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'SEOJALWA_VERSION', '1.0.0' );
+define( 'SEOJALWA_VERSION', '1.0.1' );
 define( 'SEOJALWA_API_URL', 'https://api.seojalwa.com' );
 define( 'SEOJALWA_PLUGIN_FILE', __FILE__ );
 define( 'SEOJALWA_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
@@ -171,18 +171,44 @@ function seojalwa_ajax_verify_key() {
     if ( is_wp_error( $result ) ) {
         wp_send_json_error( array( 'message' => $result->get_error_message() ), 400 );
     }
-    if ( empty( $result['valid'] ) ) {
-        wp_send_json_error( array( 'message' => 'Invalid API key' ), 401 );
+    if ( empty( $result['success'] ) || empty( $result['valid'] ) ) {
+        wp_send_json_error( array(
+            'message' => isset( $result['error'] ) ? $result['error'] : 'Invalid API key',
+            'code'    => isset( $result['code'] ) ? $result['code'] : 'UNKNOWN_ERROR',
+        ), 401 );
     }
+    $data = isset( $result['data'] ) ? $result['data'] : array();
     update_option( 'seojalwa_api_key', $api_key );
-    update_option( 'seojalwa_site_id', isset( $result['data']['userId'] ) ? $result['data']['userId'] : '' );
+    update_option( 'seojalwa_site_id', isset( $data['userId'] ) ? $data['userId'] : '' );
     update_option( 'seojalwa_connected', true );
     update_option( 'seojalwa_connected_since', time() );
     update_option( 'seojalwa_last_sync', time() );
     wp_send_json_success( array(
         'message'   => 'Connected successfully',
-        'site_name' => isset( $result['data']['siteName'] ) ? $result['data']['siteName'] : '',
+        'site_name' => isset( $data['siteName'] ) ? $data['siteName'] : '',
     ) );
+}
+
+add_action( 'wp_ajax_seojalwa_test_connectivity', 'seojalwa_ajax_test_connectivity' );
+
+function seojalwa_ajax_test_connectivity() {
+    check_ajax_referer( 'seojalwa_admin', 'nonce' );
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_send_json_error( array( 'message' => 'Permission denied' ), 403 );
+    }
+    $r = SEOJalwa_API::test_connectivity();
+    if ( ! empty( $r['reachable'] ) ) {
+        wp_send_json_success( array(
+            'reachable' => true,
+            'message'   => 'API reachable',
+            'status'    => isset( $r['status'] ) ? $r['status'] : 200,
+        ) );
+    }
+    wp_send_json_error( array(
+        'reachable' => false,
+        'message'   => isset( $r['error'] ) ? $r['error']
+            : 'Cannot reach api.seojalwa.com — your hosting may be blocking outbound HTTPS requests. Contact your host or our support at hello@seojalwa.com.',
+    ), 503 );
 }
 
 add_action( 'wp_ajax_seojalwa_disconnect', 'seojalwa_ajax_disconnect' );

@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel
 
 from core.database import get_db
@@ -46,17 +46,36 @@ class TrackReq(BaseModel):
 
 @router.post("/verify")
 async def verify(
-    body: VerifyReq | None = None,
+    request: Request,
     x_jalwa_api_key: str | None = Header(None, alias="X-Jalwa-API-Key"),
 ):
-    site = await _site_from_key(x_jalwa_api_key)
-    # Optional siteUrl check — guards against accidental cross-site key reuse
-    if body and body.siteUrl:
-        norm_supplied = body.siteUrl.rstrip("/").lower().replace(
+    # Parse body (best-effort — verify is also callable header-only)
+    body: dict = {}
+    try:
+        body = await request.json() if request.headers.get(
+            "content-type", "").startswith("application/json") else {}
+    except Exception:
+        body = {}
+
+    # Accept api_key from body as a fallback when the header is stripped by
+    # an aggressive proxy (some shared hosts strip non-standard headers).
+    api_key = x_jalwa_api_key or body.get("api_key") or body.get("apiKey")
+    ua = request.headers.get("user-agent", "")
+    if api_key:
+        logger.info("plugin verify ua=%r keypfx=%s", ua, api_key[:16])
+    else:
+        logger.warning("plugin verify ua=%r missing key", ua)
+        raise APIError("API key required", "MISSING_API_KEY", 400)
+
+    site = await _site_from_key(api_key)
+
+    # Optional siteUrl check (legacy `siteUrl` + new `site_url` both accepted)
+    supplied_url = (body.get("siteUrl") or body.get("site_url") or "").strip()
+    if supplied_url:
+        norm_supplied = supplied_url.rstrip("/").lower().replace(
             "http://", "https://")
         norm_stored = (site.get("url") or "").rstrip("/").lower().replace(
             "http://", "https://")
-        # Allow either to be a substring of the other (handles www. + paths)
         if (norm_supplied not in norm_stored
                 and norm_stored not in norm_supplied):
             logger.warning(
@@ -67,13 +86,39 @@ async def verify(
                 "key from your dashboard for this site.",
                 "SITE_URL_MISMATCH", 400)
 
-    await get_db().sites.update_one(
-        {"id": site["id"]},
-        {"$set": {"wordpressConnected": True,
-                  "lastSync": utcnow_iso(),
-                  "updatedAt": utcnow_iso()}})
-    return ok({"valid": True, "siteName": site["name"],
-               "userId": site["userId"]})
+    wp_version = body.get("wp_version") or body.get("wpVersion") or ""
+    php_version = body.get("php_version") or body.get("phpVersion") or ""
+    site_name = body.get("site_name") or body.get("siteName") or ""
+    plugin_version = body.get("plugin_version") or ""
+
+    updates: dict = {
+        "wordpressConnected": True,
+        "lastSync": utcnow_iso(),
+        "updatedAt": utcnow_iso(),
+    }
+    if wp_version:
+        updates["wordpressVersion"] = wp_version
+    if php_version:
+        updates["phpVersion"] = php_version
+    if supplied_url:
+        updates["actualSiteUrl"] = supplied_url
+    if plugin_version:
+        updates["pluginVersion"] = plugin_version
+    if site_name and not site.get("name"):
+        updates["name"] = site_name
+
+    await get_db().sites.update_one({"id": site["id"]}, {"$set": updates})
+
+    logger.info("plugin verify OK site=%s userId=%s wp=%s php=%s",
+                site.get("name"), site.get("userId"),
+                wp_version, php_version)
+
+    return ok({
+        "valid": True,
+        "siteName": site["name"],
+        "userId": site["userId"],
+        "siteId": site["id"],
+    })
 
 
 @router.post("/ping")

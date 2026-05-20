@@ -12,6 +12,16 @@
     border-left-color: #2563eb;
     color: #1e3a8a;
 }
+.seojalwa-banner--ok {
+    background: #ecfdf5;
+    border-left-color: #16a34a;
+    color: #064e3b;
+}
+.seojalwa-banner--err {
+    background: #fef2f2;
+    border-left-color: #dc2626;
+    color: #7f1d1d;
+}
 .seojalwa-banner strong { font-size: 15px; display: block; margin-bottom: 4px; }
 .seojalwa-banner p { margin: 4px 0; }
 .seojalwa-wrap .form-table th { width: 220px; }

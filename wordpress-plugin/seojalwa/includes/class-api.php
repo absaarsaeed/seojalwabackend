@@ -44,12 +44,96 @@ class SEOJalwa_API {
 
     /** Verify the user's API key against /api/plugin/verify */
     public static function verify_key( $api_key ) {
-        $response = wp_remote_post( self::api_url( '/api/plugin/verify' ), array(
-            'timeout' => 10,
-            'headers' => self::headers( $api_key ),
-            'body'    => wp_json_encode( new stdClass() ),
+        $api_url = self::api_url( '/api/plugin/verify' );
+
+        error_log( '[SEO Jalwa] Calling ' . $api_url . ' with key '
+            . substr( (string) $api_key, 0, 20 ) . '...' );
+
+        $response = wp_remote_post( $api_url, array(
+            'method'      => 'POST',
+            'timeout'     => 30,
+            'redirection' => 5,
+            'httpversion' => '1.1',
+            'sslverify'   => true,
+            'blocking'    => true,
+            'headers'     => array(
+                'X-Jalwa-API-Key' => $api_key,
+                'Content-Type'    => 'application/json',
+                'Accept'          => 'application/json',
+                'User-Agent'      => 'SEO Jalwa Plugin v' . SEOJALWA_VERSION,
+            ),
+            'body'        => wp_json_encode( array(
+                'site_url'       => get_site_url(),
+                'site_name'      => get_bloginfo( 'name' ),
+                'wp_version'     => get_bloginfo( 'version' ),
+                'php_version'    => phpversion(),
+                'plugin_version' => SEOJALWA_VERSION,
+            ) ),
+            'data_format' => 'body',
         ) );
-        return self::handle_response( $response );
+
+        if ( is_wp_error( $response ) ) {
+            $error_msg = $response->get_error_message();
+            error_log( '[SEO Jalwa] WP_Error: ' . $error_msg );
+            return array(
+                'success' => false,
+                'error'   => 'Cannot reach SEO Jalwa server: ' . $error_msg,
+                'code'    => 'CONNECTION_FAILED',
+            );
+        }
+
+        $status_code = wp_remote_retrieve_response_code( $response );
+        $body        = wp_remote_retrieve_body( $response );
+
+        error_log( '[SEO Jalwa] Status: ' . $status_code );
+        error_log( '[SEO Jalwa] Body: ' . $body );
+
+        $data = json_decode( $body, true );
+
+        if ( null === $data && JSON_ERROR_NONE !== json_last_error() ) {
+            return array(
+                'success'      => false,
+                'error'        => 'Server returned invalid response',
+                'code'         => 'PARSE_ERROR',
+                'raw_response' => substr( (string) $body, 0, 200 ),
+            );
+        }
+
+        if ( 200 === (int) $status_code
+            && isset( $data['success'] ) && true === $data['success'] ) {
+            return array(
+                'success' => true,
+                'valid'   => true,
+                'data'    => isset( $data['data'] ) ? $data['data'] : array(),
+            );
+        }
+
+        return array(
+            'success' => false,
+            'error'   => isset( $data['error'] ) ? $data['error']
+                : ( 'Verification failed (HTTP ' . $status_code . ')' ),
+            'code'    => isset( $data['code'] ) ? $data['code'] : 'UNKNOWN_ERROR',
+        );
+    }
+
+    /** Quick reachability check against /api/health (no auth). */
+    public static function test_connectivity() {
+        $response = wp_remote_get( self::api_url( '/api/health' ), array(
+            'timeout'    => 10,
+            'sslverify'  => true,
+            'user-agent' => 'SEO Jalwa Plugin v' . SEOJALWA_VERSION,
+        ) );
+        if ( is_wp_error( $response ) ) {
+            return array(
+                'reachable' => false,
+                'error'     => $response->get_error_message(),
+            );
+        }
+        $code = (int) wp_remote_retrieve_response_code( $response );
+        return array(
+            'reachable' => 200 === $code,
+            'status'    => $code,
+        );
     }
 
     /** Keep-alive ping — hourly cron */

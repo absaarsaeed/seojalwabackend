@@ -4,7 +4,7 @@ Tags: seo, content, ai, automatic publishing
 Requires at least: 5.0
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -43,6 +43,16 @@ No. SEO Jalwa only creates new posts. It never modifies your existing content.
 Yes — meta title and meta description are written into Yoast's standard meta keys (`_yoast_wpseo_title`, `_yoast_wpseo_metadesc`).
 
 == Changelog ==
+
+= 1.0.1 =
+* Robust connectivity diagnostics on the settings screen (green/red badge).
+* Verbose `error_log` traces for verify (URL, key prefix, HTTP status, body).
+* Verify call now sends `site_url`, `site_name`, `wp_version`, `php_version`,
+  and `plugin_version` to the server so connection issues surface explicit
+  error codes (`INVALID_API_KEY`, `SITE_URL_MISMATCH`, `CONNECTION_FAILED`,
+  `PARSE_ERROR`).
+* `User-Agent: SEO Jalwa Plugin v1.0.1` on every request.
+* Bumped HTTP timeout from 10s to 30s for slower shared hosting.
 
 = 1.0.0 =
 * Initial release.
