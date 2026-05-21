@@ -54,14 +54,27 @@ class SEOJalwa_Publisher {
             return $existing[0]->ID;
         }
 
-        // 1. Insert the post
+        // 1. Resolve target category — prefer backend-supplied intelligent
+        //    category mapping; fall back to the admin's default category.
+        $fallback_cat = (int) get_option( 'seojalwa_category', 1 );
+        $categories   = array( $fallback_cat );
+        if ( ! empty( $article['wordpressCategoryId'] ) ) {
+            $categories = array( (int) $article['wordpressCategoryId'] );
+        } elseif ( ! empty( $article['wordpressCategoryName'] ) ) {
+            $term = get_term_by( 'name', $article['wordpressCategoryName'], 'category' );
+            if ( $term && ! is_wp_error( $term ) ) {
+                $categories = array( (int) $term->term_id );
+            }
+        }
+
+        // 2. Insert the post
         $post_id = wp_insert_post( array(
             'post_title'    => wp_strip_all_tags( $article['title'] ),
             'post_content'  => isset( $article['content'] ) ? $article['content'] : '',
             'post_excerpt'  => isset( $article['excerpt'] ) ? $article['excerpt'] : '',
             'post_status'   => get_option( 'seojalwa_post_status', 'publish' ),
             'post_author'   => (int) get_option( 'seojalwa_post_author', 1 ),
-            'post_category' => array( (int) get_option( 'seojalwa_category', 1 ) ),
+            'post_category' => $categories,
             'tags_input'    => isset( $article['suggestedTags'] ) && is_array( $article['suggestedTags'] )
                 ? $article['suggestedTags'] : array(),
             'meta_input'    => array(
@@ -78,7 +91,7 @@ class SEOJalwa_Publisher {
             return $post_id;
         }
 
-        // 2. Featured image
+        // 3. Featured image
         if ( ! empty( $article['featuredImageUrl'] ) ) {
             $attachment_id = self::sideload_image( $article['featuredImageUrl'], $post_id, $article['title'] );
             if ( $attachment_id && ! is_wp_error( $attachment_id ) ) {
@@ -86,10 +99,10 @@ class SEOJalwa_Publisher {
             }
         }
 
-        // 3. Confirm back to the backend
+        // 4. Confirm back to the backend
         SEOJalwa_API::confirm_published( $article['id'], $post_id, get_permalink( $post_id ) );
 
-        // 4. Increment counter + log
+        // 5. Increment counter + log
         update_option( 'seojalwa_articles_count',
             (int) get_option( 'seojalwa_articles_count', 0 ) + 1 );
         error_log( '[SEO Jalwa] Published "' . $article['title'] . '" as WP post #' . $post_id );

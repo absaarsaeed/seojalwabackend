@@ -3,7 +3,7 @@
  * Plugin Name: SEO Jalwa
  * Plugin URI: https://seojalwa.com
  * Description: Connect your WordPress site to SEO Jalwa for automatic daily article publishing, SEO optimization, and AI-powered content generation.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: SEO Jalwa
  * Author URI: https://seojalwa.com
  * License: GPL v2 or later
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define( 'SEOJALWA_VERSION', '1.0.1' );
+define( 'SEOJALWA_VERSION', '1.0.2' );
 define( 'SEOJALWA_API_URL', 'https://api.seojalwa.com' );
 define( 'SEOJALWA_PLUGIN_FILE', __FILE__ );
 define( 'SEOJALWA_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );

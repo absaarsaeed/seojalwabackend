@@ -180,11 +180,12 @@ async def track(body: TrackReq,
 
 # ---------------------------------------------------------------- version
 DEFAULT_PLUGIN_SETTINGS = {
-    "plugin_version": "1.0.0",
+    "plugin_version": "1.0.2",
     "plugin_download_url": "PLACEHOLDER_UPDATE_FROM_ADMIN",
-    "plugin_changelog": ("Initial release. Automatic daily article "
-                         "publishing, SEO optimization, and WordPress "
-                         "integration."),
+    "plugin_changelog": ("v1.0.2 — Intelligent category selection: each "
+                         "published article now lands in the WordPress "
+                         "category picked by SEO Jalwa's site analyser, "
+                         "with the default category as fallback."),
 }
 
 

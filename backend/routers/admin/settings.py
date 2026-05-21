@@ -56,7 +56,7 @@ _PLUGIN_FIELD_MAP = {
 
 
 _DEFAULTS_FOR_FIELD = {
-    "pluginVersion": "1.0.1",
+    "pluginVersion": "1.0.2",
     "pluginDownloadUrl": "",
     "pluginChangelog": "",
     "renewalReminderDays": [7, 3, 1],
