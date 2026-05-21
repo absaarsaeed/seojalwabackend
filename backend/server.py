@@ -23,9 +23,9 @@ from services.api_keys import refresh_cache, schedule_cache_refresh  # noqa: E40
 # Routers
 from routers import (analytics, articles, article_settings, auth,  # noqa: E402
                       ai_visibility, ai_writer, auto_publish, billing,
-                      feedback, growth_score, notifications, plugin,
-                      public, search_terms, sites, social, team, user,
-                      user_activity)
+                      dashboard, feedback, growth_score, notifications,
+                      pages, plugin, public, search_terms, sites, social,
+                      team, user, user_activity)
 from routers.admin import (activity as admin_activity,  # noqa: E402
                             analytics as admin_analytics,
                             announcements as admin_announcements,
@@ -152,6 +152,8 @@ app.include_router(billing.router, prefix=PREFIX)
 app.include_router(plugin.router, prefix=PREFIX)
 app.include_router(notifications.router, prefix=PREFIX)
 app.include_router(user_activity.router, prefix=PREFIX)
+app.include_router(dashboard.router, prefix=PREFIX)
+app.include_router(pages.router, prefix=PREFIX)
 app.include_router(feedback.public_router, prefix=PREFIX)
 app.include_router(public.router, prefix=PREFIX)
 

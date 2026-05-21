@@ -40,6 +40,7 @@ class SettingsBody(BaseModel):
     renewalReminderDays: Optional[list[int]] = None
     trialEndingReminderDays: Optional[list[int]] = None
     paymentRetryDays: Optional[list[int]] = None
+    trialDays: Optional[int] = None
 
 
 # Mapping: API field → settings collection key/value record
@@ -50,6 +51,7 @@ _PLUGIN_FIELD_MAP = {
     "renewalReminderDays": "renewal_reminder_days",
     "trialEndingReminderDays": "trial_ending_reminder_days",
     "paymentRetryDays": "payment_retry_days",
+    "trialDays": "trial_days",
 }
 
 
@@ -60,6 +62,7 @@ _DEFAULTS_FOR_FIELD = {
     "renewalReminderDays": [7, 3, 1],
     "trialEndingReminderDays": [3, 1],
     "paymentRetryDays": [1, 3, 7],
+    "trialDays": 14,
 }
 
 

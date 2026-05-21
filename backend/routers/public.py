@@ -32,6 +32,21 @@ async def public_plans():
     return ok(rows)
 
 
+@router.get("/settings/public")
+async def public_settings():
+    """Subset of admin settings safe to expose anonymously."""
+    db = get_db()
+    keys = ["trial_days", "plugin_version", "plugin_download_url"]
+    out: dict = {}
+    for k in keys:
+        doc = await db.settings.find_one({"key": k}, {"_id": 0})
+        out[k] = (doc or {}).get("value")
+    # Fallback defaults
+    if not out.get("trial_days"):
+        out["trial_days"] = 14
+    return ok(out)
+
+
 @router.get("/blog")
 async def public_blog(page: int = 1, limit: int = 10,
                       status: str = "published"):

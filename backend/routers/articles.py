@@ -202,3 +202,31 @@ async def reschedule(article_id: str, body: RescheduleReq,
     if res.matched_count == 0:
         raise APIError("Article not found", "NOT_FOUND", 404)
     return ok({"rescheduled": True})
+
+
+@router.post("/{article_id}/retry")
+async def retry_article(article_id: str, bg: BackgroundTasks,
+                        user=Depends(get_current_user)):
+    """Re-queue a FAILED article for generation."""
+    db = get_db()
+    art = await db.articles.find_one(
+        {"id": article_id, "userId": user["id"]}, {"_id": 0})
+    if not art:
+        raise APIError("Article not found", "NOT_FOUND", 404)
+    if art.get("status") not in {"FAILED", "DRAFT"}:
+        raise APIError("Only FAILED articles can be retried",
+                       "INVALID_STATE", 400)
+    # Enforce plan quota again on retry
+    usage = await check_article_limit(user["id"])
+    job_id = str(uuid.uuid4())
+    await db.jobs.insert_one({
+        "id": job_id, "type": "article-generation", "status": "queued",
+        "progress": 0, "createdAt": utcnow_iso()})
+    await db.articles.update_one(
+        {"id": article_id},
+        {"$set": {"status": "GENERATING", "updatedAt": utcnow_iso()}})
+    bg.add_task(jobs.run_article_generation, job_id, article_id,
+                art["siteId"], user["id"],
+                art.get("searchTerm") or art.get("title") or "")
+    return ok({"jobId": job_id, "articleId": article_id,
+               "status": "queued", "quota": usage}, "Retry queued")
