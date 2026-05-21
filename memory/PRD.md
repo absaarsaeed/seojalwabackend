@@ -137,6 +137,27 @@ The original spec asked for Node + Express + PostgreSQL + Prisma. Per user choic
 - Google OAuth login (POST /api/auth/google) — GSC OAuth is real
 - Microsoft Copilot scan (no public API — derived)
 
+## Master launch readiness — 2026-05-21
+
+**Status: COMPLETE. 29/29 bash smoke + 23/23 pytest (master_launch + e2e) PASS.**
+
+### Backend deliverables for the 20-part "Master launch readiness" prompt
+- **Part 1 — Auto site analysis**: `services/site_analyzer.py` fetches homepage + WP posts + categories, asks GPT-4o for niche/audience/style, persists `article_settings`, suggests 10 search terms, builds `categoryMapping`, marks site `analyzed=true`. Triggered from `POST /api/plugin/verify` and `POST /api/sites/{id}/verify-connection`.
+- **Part 2 — Trial article pre-generation**: `services/trial.py::setup_trial_articles()` queues `trial_days // 4` (3-7) SCHEDULED articles for the daily 6 AM cron. Chained from the analyser.
+- **Part 2b — Plan article batch**: `setup_plan_articles()` triggered when admin upgrades a user (admin/users.py:356).
+- **Part 4 — Intelligent category selection**: `llm.pick_category(topic, mapping)` chooses the best WP category from `site.categoryMapping` (exact → token-overlap). Wired into `jobs.run_article_generation` so every published article carries `wordpressCategoryId` + `wordpressCategoryName`. WordPress publisher injects `categories: [id]` payload.
+- **Part 5 — Internal & external AI linking**: `llm.resolve_article_links(content, topic, candidates)` replaces `[INTERNAL_LINK: anchor]` placeholders with `<a href>` to existing published articles (token overlap match on title), and `[EXTERNAL_LINK: anchor]` with GPT-suggested authoritative URLs (wikipedia/.gov/.edu/industry sites). Unresolved placeholders strip to plain text so published HTML is always clean.
+- **Part 7 — GSC daily auto-sync cron**: APScheduler `cron_daily_gsc_sync` at 02:00 UTC iterates every site → pulls 30 days → updates per-article clicks/impressions/CTR/avgPosition.
+- **Part 10 — White-label publishing**: `wordpress.publish_article` reads the user's plan; if `plan.whiteLabel=False` it appends a small "Powered by SEO Jalwa" footer. Agency plan stays clean.
+- **Part 11 — `cmsConnections` → `websiteConnections` rename**: Seed/list/POST/PUT now write BOTH keys; idempotent `_migrate_plan_field_rename()` runs every startup; all 3 list endpoints (`/api/plans`, `/api/billing/plans`, `/api/admin/plans`) backfill both keys for legacy rows.
+
+### Bugs fixed in this session
+- **GSC 500**: `routers/analytics.py` was `await`-ing sync functions `_gsc.build_authorize_url()` and `_gsc.exchange_code()`, crashing when Google OAuth was unconfigured. Removed the `await`; endpoint now returns proper `400 GSC_NOT_CONFIGURED`.
+
+### Tests added
+- `/app/backend/tests/test_master_launch.py` — 8 unit tests (`pick_category`, `resolve_article_links`, `_best_internal_match`)
+- `/app/backend/tests/test_master_launch_e2e.py` — 15 end-to-end tests (added by testing agent)
+
 ### Known minor issues (carried from Phase 0)
 1. In-memory rate-limit/admin-lockout key on `request.client.host` (ingress IP). Move to Redis + honour `X-Forwarded-For` for multi-pod scaling.
 2. `RequestValidationError` handler short-circuits before rate-limit dep on the public AI-visibility demo. Either move rate-limit to a higher-priority Request-only dep, or accept and document.
