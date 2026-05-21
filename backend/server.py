@@ -23,9 +23,11 @@ from services.api_keys import refresh_cache, schedule_cache_refresh  # noqa: E40
 # Routers
 from routers import (analytics, articles, article_settings, auth,  # noqa: E402
                       ai_visibility, ai_writer, auto_publish, billing,
-                      growth_score, notifications, plugin, public,
-                      search_terms, sites, social, team, user)
-from routers.admin import (analytics as admin_analytics,  # noqa: E402
+                      feedback, growth_score, notifications, plugin,
+                      public, search_terms, sites, social, team, user,
+                      user_activity)
+from routers.admin import (activity as admin_activity,  # noqa: E402
+                            analytics as admin_analytics,
                             announcements as admin_announcements,
                             api_keys as admin_api_keys,
                             audit as admin_audit,
@@ -33,6 +35,9 @@ from routers.admin import (analytics as admin_analytics,  # noqa: E402
                             billing as admin_billing,
                             blog as admin_blog,
                             coupons as admin_coupons,
+                            email_logs as admin_email_logs,
+                            email_templates as admin_email_templates,
+                            insights as admin_insights,
                             plans as admin_plans,
                             plugin as admin_plugin,
                             settings as admin_settings,
@@ -63,6 +68,15 @@ async def lifespan(app: FastAPI):
         await run_seed()
     except Exception as e:
         log.warning("seed skipped: %s", e)
+
+    # Seed email templates (idempotent)
+    try:
+        from services.email_templates import seed_templates
+        n = await seed_templates()
+        if n:
+            log.info("email_templates: seeded %d new templates", n)
+    except Exception as e:
+        log.warning("email_templates seed skipped: %s", e)
 
     yield
     stop_scheduler()
@@ -137,6 +151,8 @@ app.include_router(user.router, prefix=PREFIX)
 app.include_router(billing.router, prefix=PREFIX)
 app.include_router(plugin.router, prefix=PREFIX)
 app.include_router(notifications.router, prefix=PREFIX)
+app.include_router(user_activity.router, prefix=PREFIX)
+app.include_router(feedback.public_router, prefix=PREFIX)
 app.include_router(public.router, prefix=PREFIX)
 
 # Admin
@@ -152,3 +168,8 @@ app.include_router(admin_api_keys.router, prefix=PREFIX)
 app.include_router(admin_settings.router, prefix=PREFIX)
 app.include_router(admin_plugin.router, prefix=PREFIX)
 app.include_router(admin_audit.router, prefix=PREFIX)
+app.include_router(admin_activity.router, prefix=PREFIX)
+app.include_router(admin_email_logs.router, prefix=PREFIX)
+app.include_router(admin_email_templates.router, prefix=PREFIX)
+app.include_router(admin_insights.router, prefix=PREFIX)
+app.include_router(feedback.admin_router, prefix=PREFIX)

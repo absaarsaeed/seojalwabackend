@@ -36,6 +36,10 @@ class SettingsBody(BaseModel):
     pluginVersion: Optional[str] = None
     pluginDownloadUrl: Optional[str] = None
     pluginChangelog: Optional[str] = None
+    # Reminder cron settings — arrays of integer days
+    renewalReminderDays: Optional[list[int]] = None
+    trialEndingReminderDays: Optional[list[int]] = None
+    paymentRetryDays: Optional[list[int]] = None
 
 
 # Mapping: API field → settings collection key/value record
@@ -43,6 +47,19 @@ _PLUGIN_FIELD_MAP = {
     "pluginVersion": "plugin_version",
     "pluginDownloadUrl": "plugin_download_url",
     "pluginChangelog": "plugin_changelog",
+    "renewalReminderDays": "renewal_reminder_days",
+    "trialEndingReminderDays": "trial_ending_reminder_days",
+    "paymentRetryDays": "payment_retry_days",
+}
+
+
+_DEFAULTS_FOR_FIELD = {
+    "pluginVersion": "1.0.1",
+    "pluginDownloadUrl": "",
+    "pluginChangelog": "",
+    "renewalReminderDays": [7, 3, 1],
+    "trialEndingReminderDays": [3, 1],
+    "paymentRetryDays": [1, 3, 7],
 }
 
 
@@ -51,7 +68,10 @@ async def _read_plugin_settings() -> dict:
     out: dict = {}
     for api_field, doc_key in _PLUGIN_FIELD_MAP.items():
         doc = await db.settings.find_one({"key": doc_key}, {"_id": 0})
-        out[api_field] = (doc or {}).get("value", "")
+        if doc and doc.get("value") not in (None, ""):
+            out[api_field] = doc["value"]
+        else:
+            out[api_field] = _DEFAULTS_FOR_FIELD.get(api_field, "")
     return out
 
 

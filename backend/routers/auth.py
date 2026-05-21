@@ -147,6 +147,14 @@ async def register(body: RegisterReq):
         login_url=f"{os.environ.get('FRONTEND_URL', '')}/login",
     )
 
+    try:
+        from services.activity import log_activity
+        await log_activity(user_id, "USER_REGISTERED",
+                           metadata={"email": body.email,
+                                      "websiteUrl": cleaned_url})
+    except Exception:
+        pass
+
     return created({
         "user": _public_user(doc),
         "accessToken": create_access_token(user_id),
@@ -156,12 +164,17 @@ async def register(body: RegisterReq):
 
 
 @router.post("/login", dependencies=[Depends(rate_limit("auth_login", 10, 900))])
-async def login(body: LoginReq):
+async def login(body: LoginReq, request: Request):
     db = get_db()
     user = await db.users.find_one({"email": body.email.lower(),
                                     "deleted": {"$ne": True}})
     if not user or not verify_password(body.password, user["password"]):
         raise APIError("Invalid credentials", "INVALID_CREDENTIALS", 401)
+    try:
+        from services.activity import log_activity
+        await log_activity(user["id"], "USER_LOGGED_IN", request=request)
+    except Exception:
+        pass
     return ok({
         "user": _public_user(user),
         "accessToken": create_access_token(user["id"]),

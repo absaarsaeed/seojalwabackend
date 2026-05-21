@@ -80,6 +80,35 @@ async def _send_via_resend(to: str, subject: str, html: str,
                 "error": str(e), "to": to, "template": template}
 
 
+async def _write_log(provider: str, to: str, subject: str,
+                     template: str, status: str, error: str = "",
+                     status_code: int | None = None,
+                     user_id: str | None = None) -> None:
+    """Best-effort write into the `email_logs` collection."""
+    import uuid as _uuid
+    try:
+        from core.database import get_db
+        await get_db().email_logs.insert_one({
+            "id": str(_uuid.uuid4()),
+            "userId": user_id,
+            "to": to,
+            "subject": subject,
+            "templateKey": template,
+            "status": status.upper(),
+            "provider": provider.upper() if provider else None,
+            "statusCode": status_code,
+            "errorMessage": error or None,
+            "sentAt": utcnow_iso(),
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning("email_logs write failed: %s", e)
+
+
+def utcnow_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
 # ---------------------------------------------------------------- low-level
 async def send_email(
     to: str,
@@ -87,10 +116,12 @@ async def send_email(
     html: str,
     text: Optional[str] = None,
     template: str = "generic",
+    user_id: Optional[str] = None,
 ) -> dict:
     """Send email via the first configured provider (SendGrid > Resend).
 
     Never raises. Returns `{success, provider?, status_code?, error?}`.
+    Also persists a row in the `email_logs` collection.
     """
     from services.config import config_service
 
@@ -100,8 +131,14 @@ async def send_email(
     if sg_key:
         sg_from = (sg_fields.get("from_email")
                    or os.environ.get("SENDGRID_FROM_EMAIL", FROM_EMAIL))
-        return await _send_via_sendgrid(
+        result = await _send_via_sendgrid(
             to, subject, html, text, template, sg_key, sg_from)
+        await _write_log("sendgrid", to, subject, template,
+                          "SENT" if result.get("success") else "FAILED",
+                          error=str(result.get("error", "")),
+                          status_code=result.get("status_code"),
+                          user_id=user_id)
+        return result
 
     # 2) Resend (fallback)
     re_fields = await config_service.get_fields("resend")
@@ -109,14 +146,23 @@ async def send_email(
     if re_key:
         re_from = (re_fields.get("from_email")
                    or os.environ.get("RESEND_FROM_EMAIL", FROM_EMAIL))
-        return await _send_via_resend(
+        result = await _send_via_resend(
             to, subject, html, text, template, re_key, re_from)
+        await _write_log("resend", to, subject, template,
+                          "SENT" if result.get("success") else "FAILED",
+                          error=str(result.get("error", "")),
+                          status_code=result.get("status_code"),
+                          user_id=user_id)
+        return result
 
     # 3) Neither configured
     logger.warning(
         "Email not sent to %s (template=%s): No email provider configured. "
         "Add SendGrid or Resend API key in admin panel.",
         to, template)
+    await _write_log("", to, subject, template, "SKIPPED",
+                      error="no_email_provider_configured",
+                      user_id=user_id)
     return {"success": False, "skipped": True, "to": to,
             "template": template,
             "error": "no_email_provider_configured"}

@@ -185,6 +185,47 @@ async def user_detail(user_id: str):
                "sites": sites, "socialAccounts": social, "usage": usage})
 
 
+@router.delete("/users/{user_id}",
+               dependencies=[Depends(get_admin_session)])
+async def delete_user(user_id: str, request: Request):
+    """Cascade delete: drop the user and every record that belonged to them."""
+    db = get_db()
+    user = await db.users.find_one({"id": user_id}, {"_id": 0, "password": 0})
+    if not user:
+        raise APIError("User not found", "NOT_FOUND", 404)
+
+    cascades: dict[str, int] = {}
+
+    async def _purge(name: str, query: dict) -> None:
+        res = await db[name].delete_many(query)
+        cascades[name] = res.deleted_count
+
+    # Owned collections — keyed by userId
+    for coll in ("sites", "articles", "social_posts", "search_terms",
+                 "ai_visibility_scans", "competitors", "growth_scores",
+                 "article_settings", "brand_voices", "generated_content",
+                 "social_accounts", "subscriptions", "invoices",
+                 "team_members", "notifications", "user_activity_log",
+                 "email_logs"):
+        await _purge(coll, {"userId": user_id})
+
+    # Finally the user record itself
+    res = await db.users.delete_one({"id": user_id})
+    cascades["users"] = res.deleted_count
+
+    # Audit
+    await log_action(
+        "USER_DELETED", target_type="user", target_id=user_id,
+        ip_address=(request.client.host if request.client else ""),
+        metadata={"userEmail": user.get("email"),
+                  "cascadedDeletes": cascades})
+
+    return ok({
+        "deletedUser": user.get("email"),
+        "cascadedDeletes": cascades,
+    }, "User deleted")
+
+
 @router.put("/users/{user_id}/plan",
             dependencies=[Depends(get_admin_session)])
 async def change_plan(user_id: str, body: PlanChangeReq, request: Request):

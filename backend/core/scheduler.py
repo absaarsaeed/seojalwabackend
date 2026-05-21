@@ -22,6 +22,7 @@ def start_scheduler():
         cron_hourly_social_publish,
         cron_weekly_digest,
     )
+    from services.reminders import cron_reminders
 
     scheduler.add_job(cron_daily_article_generation,
                       CronTrigger(hour=6, minute=0))
@@ -33,9 +34,11 @@ def start_scheduler():
                       CronTrigger(day_of_week="mon", hour=7, minute=0))
     scheduler.add_job(cron_daily_gsc_sync, CronTrigger(hour=2, minute=0))
     scheduler.add_job(cron_hourly_social_publish, CronTrigger(minute=0))
+    # Daily 9 AM UTC — trial-ending + renewal reminders
+    scheduler.add_job(cron_reminders, CronTrigger(hour=9, minute=0))
 
     scheduler.start()
-    logger.info("APScheduler started with 6 cron jobs")
+    logger.info("APScheduler started with 7 cron jobs")
     return scheduler
 
 

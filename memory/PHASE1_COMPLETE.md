@@ -448,20 +448,81 @@ New → Upload Plugin**, then enters their SEO Jalwa **Site API Key** under
 - All 7 new flows green via curl (response excerpts in chat log).
 
 ### Deferred to Phase 2 (intentionally not shipped this pass)
-- **FIX 4** Full user activity log collection (currently we have admin
-  audit + dashboard activity feed; per-user activity log endpoint is
-  scaffolded but not exposed).
-- **FIX 5** Email log collection + admin viewer (`emailsSentToday` reads
-  from the collection if/when it exists; writer hook is not yet wired).
-- **FIX 6** Editable email templates in DB (current templates remain
-  hardcoded in `services/email.py`; 15-template seed + CRUD endpoints are
-  planned).
-- **FIX 7** Renewal reminder cron + `renewal_reminder_days` setting.
-- **FIX 9** Full cascade delete on `DELETE /api/admin/users/{id}` (only
-  drops the user record today — sites/articles/etc remain orphaned).
-- **FIX 10** `/feedback` + `submissions` collection.
-- **FIX 11** GPT-4o retention insights endpoint.
-- **FIX 13, 14** Admin analytics + billing overview endpoints exist but
-  some fields still source from `analytics` mocks.
-- **FIX 15, 16** Coupon/blog CRUD endpoints exist; "apply coupon" UX flow
-  still needs LemonSqueezy hand-off.
+- ~~FIX 4 Per-user activity log endpoint~~ ✅ **Shipped 2026-05-21**
+- ~~FIX 5 Email log collection + admin viewer~~ ✅ **Shipped 2026-05-21**
+- ~~FIX 6 Editable email templates in DB~~ ✅ **Shipped 2026-05-21**
+- ~~FIX 7 Renewal reminder cron~~ ✅ **Shipped 2026-05-21**
+- ~~FIX 9 Cascade delete~~ ✅ **Shipped 2026-05-21**
+- ~~FIX 10 `/feedback` + submissions~~ ✅ **Shipped 2026-05-21**
+- ~~FIX 11 GPT-4o retention insights~~ ✅ **Shipped 2026-05-21**
+- **FIX 13/14** Some admin analytics/billing fields still source from mocks — *requires LemonSqueezy first*.
+- **FIX 15/16** Coupon-apply UX still tied to LemonSqueezy — *requires LemonSqueezy first*.
+
+---
+
+## 11 · Phase 1 — Final Pass (2026-05-21)
+
+### Now shipped (all deferred items completed)
+
+#### FIX 4 — Per-user activity log
+- New `services/activity.py` writer with `log_activity(user_id, action, metadata, request)`.
+- New `user_activity_log` collection — fields: `id, userId, action, metadata, ipAddress, userAgent, createdAt`.
+- `GET /api/user/activity` — current user's own paginated activity feed.
+- `GET /api/admin/users/{id}/activity-log` — admin per-user paginated activity feed.
+- Hooks wired: `USER_REGISTERED` on signup, `USER_LOGGED_IN` on login, `FEEDBACK_SUBMITTED` on feedback. Article/AI-scan/site events can be hooked similarly.
+
+#### FIX 5 — Email logs
+- Every `send_email(...)` call writes a row into `email_logs`:
+  `{id, userId, to, subject, templateKey, status (SENT|FAILED|SKIPPED), provider (SENDGRID|RESEND), statusCode, errorMessage, sentAt}`.
+- `GET /api/admin/emails?status=&user_id=&template_key=&page=&limit=` — filterable paginated list.
+- `GET /api/admin/emails/{id}` — single email with full payload.
+
+#### FIX 6 — Editable email templates in DB
+- New `email_templates` collection seeded on boot with **15 templates**:
+  welcome, verify_email, password_reset, article_published, article_failed,
+  weekly_digest, ai_scan_complete, subscription_created, subscription_renewed,
+  subscription_cancelled, subscription_expiring, payment_failed, team_invite,
+  trial_ending, announcement.
+- `services/email_templates.py` — DB-backed loader with 60s TTL cache;
+  `render_template(key, vars)` interpolates `{{var}}` placeholders.
+- Admin CRUD endpoints (all `GET/PUT/POST` paths require admin session):
+  - `GET /api/admin/email-templates` — list all 15.
+  - `GET /api/admin/email-templates/{key}` — get one.
+  - `PUT /api/admin/email-templates/{key}` — update subject, htmlBody, isActive, name, description, category, variables. Writes `EMAIL_TEMPLATE_UPDATED` audit entry.
+  - `POST /api/admin/email-templates/{key}/test` — send a test email with sample variables to a chosen address.
+  - `POST /api/admin/email-templates/seed` — manual re-seed (inserts only missing).
+
+#### FIX 7 — Renewal reminder cron + settings
+- Three new fields on `GET/PUT /api/admin/settings`: `renewalReminderDays` (default `[7, 3, 1]`), `trialEndingReminderDays` (default `[3, 1]`), `paymentRetryDays` (default `[1, 3, 7]`).
+- New `services/reminders.py::cron_reminders` registered in APScheduler at **09:00 UTC daily**. For each `[N days]` window it finds subscriptions whose `currentPeriodEnd`/`trialEndsAt` is in exactly N days, renders the matching template (`subscription_expiring` or `trial_ending`), sends the email, creates a `TRIAL_ENDING`/`PAYMENT_FAILED` in-app notification, and pushes a `reminderSent` marker to avoid duplicates.
+
+#### FIX 9 — Cascade delete
+- `DELETE /api/admin/users/{id}` now purges 16 collections:
+  sites, articles, social_posts, search_terms, ai_visibility_scans,
+  competitors, growth_scores, article_settings, brand_voices,
+  generated_content, social_accounts, subscriptions, invoices,
+  team_members, notifications, user_activity_log, email_logs.
+- Response returns `{deletedUser, cascadedDeletes: {<collection>: count}}`.
+- Writes `USER_DELETED` audit entry with metadata.
+
+#### FIX 10 — Contact / Feedback
+- New `submissions` collection (replaces inline `contacts`):
+  `{id, type (CONTACT|FEEDBACK), name, email, subject, message, category, rating, pageUrl, userId, status (NEW|READ|RESOLVED|REPLIED), adminNotes, repliedAt, createdAt}`.
+- `POST /api/feedback` — anonymous or authenticated; logs `FEEDBACK_SUBMITTED` activity if user present; notifies `hello@seojalwa.com`.
+- `GET /api/admin/submissions?type=&status=&page=&limit=` — paginated list.
+- `GET /api/admin/submissions/{id}` — full record.
+- `PUT /api/admin/submissions/{id}` — update status / adminNotes.
+- `POST /api/admin/submissions/{id}/reply` — sends a real email reply via the configured provider and flips status to `REPLIED`.
+
+#### FIX 11 — GPT-4o retention insights
+- `GET /api/admin/insights/retention[?force=true]` — gathers 9 platform metrics (total users, 7d active, 14d inactive, trials expiring in 3 days, no-article users, low growth score, failed articles, cancellations, churn %) and asks GPT-4o for 5–10 prioritised, categorised suggestions. Response is JSON-array parsed, **cached for 24 h**, and includes the raw metrics so the UI can render its own dashboard tile.
+
+### Verified
+- All 7 final-pass fixes green via curl (response excerpts in chat log).
+- `Phase-1 smoke suite still passes 29/29` — no regressions.
+- `APScheduler` now reports **7 cron jobs** running.
+
+### Still deferred to Phase 2 (requires LemonSqueezy)
+- **FIX 13/14** — Admin analytics + billing overview's currency totals stay 0 until invoices flow in.
+- **FIX 15** — Coupon redemption flow on the user side.
+- **FIX 16** — Blog CRUD admin endpoints already work; public read endpoint will be exercised once content exists.
