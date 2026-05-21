@@ -1,0 +1,49 @@
+{
+  "summary": "Validated the Master-Launch readiness changes (Part 4 category-mapping, Part 5 internal/external link resolution, Part 11 cmsConnections->websiteConnections rename + backward-compat). NEW functionality: bash smoke 29/29 PASS, new e2e suite test_master_launch_e2e.py 15/15 PASS, in-process unit suite test_master_launch.py 8/8 PASS. Regression vs iteration_2 (excluding the 2 known-flaky rate-limit tests): 64/77 PASS, 13 FAIL. The 13 regression failures are NOT caused by this iteration's changes - they are pre-existing endpoint contract drift discovered while regressing iteration_2's tests against the current server. Most notable real bug: GET /api/analytics/gsc/connect returns 500 (\"object NoneType can't be used in 'await' expression\") because the router uses `await gsc.build_authorize_url(...)` but services/gsc.py defines that function (and exchange_code) as plain sync def — `await None` then crashes whenever Google OAuth is not configured. The other failures are method/path drift (POST /api/auth/google -> now GET only, POST /api/admin/api-keys batch create -> only PUT exists, SUPPORTED_KEYS still includes 'resend').",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET/POST /api/analytics/gsc/connect", "issue": "Router awaits services.gsc.build_authorize_url() and services.gsc.exchange_code() but BOTH are defined as plain `def` (sync) in /app/backend/services/gsc.py:33,59. When Google OAuth is unconfigured the sync function returns None and the router does `await None` -> 500 INTERNAL_ERROR with message 'object NoneType can\\'t be used in \\'await\\' expression'. Either mark the service functions `async def` or drop the `await` in routers/analytics.py:91,107. Spec wants 400 GSC_NOT_CONFIGURED.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/admin/api-keys (batch create)", "issue": "Returns 405 — endpoint removed/never existed. Only PUT /api/admin/api-keys/{key} works. iteration_2's test_phase1.py expected POST to work for upsert. Either restore POST as alias of PUT or update tests."},
+      {"endpoint": "POST /api/auth/google", "issue": "Returns 405 — endpoint is now GET-only (OAuth redirect). The mock-token POST path used by iteration_2's test_google_mock is gone. Update test or restore POST handler that accepts an id_token in body for SPA flow."},
+      {"endpoint": "GET /api/admin/api-keys/supported", "issue": "Still returns 'resend' in list (alongside 'sendgrid'). iteration_2 spec required resend removal. Currently 14 services, including both."},
+      {"endpoint": "GET /api/admin/plans", "issue": "List endpoint backfills `cmsConnections`/`websiteConnections` only when at least one is present. Plans saved with NEITHER key (e.g. stale TEST_ plans created via legacy schemas before the rename) come back without either key. Cosmetic — does NOT affect /api/plans or /api/billing/plans because those filter by isActive. Consider always defaulting to 0 in the list shim."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_master_launch_e2e.py",
+    "/app/backend/tests/test_master_launch.py",
+    "/app/backend/tests/smoke_phase1.sh",
+    "/app/test_reports/pytest/master_launch_full.xml",
+    "/app/test_reports/pytest/regression_full.xml"
+  ],
+  "action_items": [
+    "Fix /api/analytics/gsc/connect: make services.gsc.build_authorize_url and exchange_code `async def` (or remove `await` in routers/analytics.py). Current 500 with await-on-None is the only critical regression.",
+    "Decide intent on /api/auth/google POST and /api/admin/api-keys POST — either restore for SPA mock/admin batch use or remove iteration_2 tests targeting them.",
+    "Either remove 'resend' from SUPPORTED_KEYS or update the Phase-1 test_supported_keys_includes_sendgrid spec to allow both."
+  ],
+  "critical_code_review_comments": [
+    "Part 11 rename is correctly implemented end-to-end: /api/plans (public), /api/billing/plans, and POST /api/admin/plans all set BOTH cmsConnections and websiteConnections; POSTing with only `websiteConnections: 5` returns both keys = 5 and persists (verified live).",
+    "Part 5 link-resolution is correctly stitched: services/jobs.run_article_generation calls llm.resolve_article_links before saving. Unit tests for the function cover all 4 placeholder paths (existing-article match, slug-fallback, no-link passthrough, best-overlap selection) — 8/8 passing. The e2e check that the saved content NEVER contains [INTERNAL_LINK: or [EXTERNAL_LINK: is also passing.",
+    "Part 4 pick_category() handles exact, token-overlap, empty-mapping, and no-match cases (4/4 unit tests pass).",
+    "Generated articles still complete the job as `status=completed` even when the OPENAI LLM call fails with 401 (because the test smoke overwrites the openai key with a junk value 'sk-proj-shape2-zzzzzzzzzz5678' at the end of every smoke run). The article is saved with content='' and seoScore=25. This is a graceful degradation rather than a hard error — but consider transitioning the job to `failed` so the UI surfaces the real cause instead of an empty article page.",
+    "smoke_phase1.sh has a quoting bug at line 89 — the embedded python3 -c uses backslash-escaped double quotes inside double-quoted bash interpolation that fail with 'SyntaxError: unexpected character after line continuation character'. It still prints OK because the bash test only checks success, but the notes column is blank. Minor cosmetic.",
+    "Recommend externalising the in-memory rate-limit / admin-lockout buckets (still keyed on request.client.host == ingress IP, so cross-tester pollution remains). Carried over from iteration_2."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_master_launch_e2e.py"
+  ],
+  "success_rate": {
+    "backend_new_iteration": "52/52 (100%) — smoke 29/29 + e2e 15/15 + unit 8/8",
+    "backend_regression": "64/77 (83%) — 13 failures are pre-existing endpoint drift, not new",
+    "frontend": "not tested (backend-only per request)"
+  },
+  "test_credentials": "Admin jalwa/jalwaadmin (X-Admin-Token header). New users created per run as phase1_<ts>_<uuid>@seojalwa.com / Testing12345!.",
+  "seed_data_creation": "Each e2e run registers a fresh user + auto-site (no cleanup needed). test_07 creates a TEST_<uuid> plan and test_08 deletes it.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "For Master-Launch validation run: `bash /app/backend/tests/smoke_phase1.sh && pytest /app/backend/tests/test_master_launch_e2e.py /app/backend/tests/test_master_launch.py -v` (~10s, 52 tests). Note: smoke_phase1.sh's last two steps overwrite the openai api key in DB with a junk value 'sk-proj-shape2-zzzzzzzzzz5678' — so any subsequent article-generation test will hit OpenAI 401 and write content=''. The e2e test_09 tolerates this. To get real GPT-4o content end-to-end, restore the openai key via PUT /api/admin/api-keys/openai BEFORE the generation step. The 13 regression failures vs iteration_2 are unrelated to this iteration's deliverables (Parts 4/5/11) — they are endpoint contract drift that predates these changes.",
+  "rca of the issue": "GSC 500: services/gsc.build_authorize_url & exchange_code are plain sync `def` (return Optional[str] / Optional[dict]); routers/analytics.py treats them as awaitables (`await _gsc.build_authorize_url(state)` line 107, `await _gsc.exchange_code(body.code)` line 91). When GOOGLE_CLIENT_ID is unset they return None — Python raises TypeError 'object NoneType can\\'t be used in \\'await\\' expression' and the global exception handler emits {success:false, code:INTERNAL_ERROR, statusCode:500}. Mitigation: prepend `async` to both function definitions OR remove `await` and `_gsc` becomes synchronous-only. The auth.google POST 405 and admin/api-keys POST 405 failures are method-not-allowed because the corresponding handlers do not exist in the current router tree — these tests targeted endpoints that were re-shaped in a previous iteration that wasn't captured in iteration_2."
+}

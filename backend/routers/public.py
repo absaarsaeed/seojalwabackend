@@ -29,6 +29,13 @@ class DemoReq(BaseModel):
 async def public_plans():
     rows = await get_db().plans.find(
         {"isActive": True}, {"_id": 0}).sort("sortOrder", 1).to_list(50)
+    # Backward compat — ensure both `cmsConnections` and `websiteConnections`
+    # are present on every plan (Master prompt Part 11).
+    for r in rows:
+        if "websiteConnections" not in r and "cmsConnections" in r:
+            r["websiteConnections"] = r["cmsConnections"]
+        if "cmsConnections" not in r and "websiteConnections" in r:
+            r["cmsConnections"] = r["websiteConnections"]
     return ok(rows)
 
 

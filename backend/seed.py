@@ -18,7 +18,8 @@ DEFAULT_PLANS = [
         "name": "Starter", "monthlyPrice": 79, "annualPrice": 790,
         "description": "Perfect for small teams getting started.",
         "articlesPerMonth": 20, "socialPostsPerMonth": 60,
-        "aiScansPerMonth": 4, "teamSeats": 2, "cmsConnections": 1,
+        "aiScansPerMonth": 4, "teamSeats": 2,
+        "websiteConnections": 1, "cmsConnections": 1,
         "brandVoiceModel": True, "competitorComparison": False,
         "prioritySupport": False, "whiteLabel": False,
         "isActive": True, "sortOrder": 10,
@@ -27,7 +28,8 @@ DEFAULT_PLANS = [
         "name": "Growth", "monthlyPrice": 199, "annualPrice": 1990,
         "description": "Best for growing brands.",
         "articlesPerMonth": 60, "socialPostsPerMonth": 200,
-        "aiScansPerMonth": 12, "teamSeats": 5, "cmsConnections": 3,
+        "aiScansPerMonth": 12, "teamSeats": 5,
+        "websiteConnections": 3, "cmsConnections": 3,
         "brandVoiceModel": True, "competitorComparison": True,
         "prioritySupport": True, "whiteLabel": False,
         "isActive": True, "sortOrder": 20,
@@ -36,12 +38,30 @@ DEFAULT_PLANS = [
         "name": "Agency", "monthlyPrice": 499, "annualPrice": 4990,
         "description": "Everything for agencies and large teams.",
         "articlesPerMonth": 200, "socialPostsPerMonth": 1000,
-        "aiScansPerMonth": 60, "teamSeats": 20, "cmsConnections": -1,
+        "aiScansPerMonth": 60, "teamSeats": 20,
+        "websiteConnections": -1, "cmsConnections": -1,
         "brandVoiceModel": True, "competitorComparison": True,
         "prioritySupport": True, "whiteLabel": True,
         "isActive": True, "sortOrder": 30,
     },
 ]
+
+
+async def _migrate_plan_field_rename(db):
+    """Master prompt Part 11 — rename `cmsConnections` → `websiteConnections`.
+
+    Idempotent: only updates plans that have `cmsConnections` but no
+    `websiteConnections` field yet. Keeps the legacy key around for
+    backward compatibility with any existing frontend code that still
+    reads it.
+    """
+    async for p in db.plans.find(
+            {"cmsConnections": {"$exists": True},
+             "websiteConnections": {"$exists": False}}, {"_id": 0}):
+        await db.plans.update_one(
+            {"id": p["id"]},
+            {"$set": {"websiteConnections": p.get("cmsConnections"),
+                       "updatedAt": utcnow_iso()}})
 
 
 async def run_seed():
@@ -54,6 +74,9 @@ async def run_seed():
             doc = {"id": str(uuid.uuid4()), **p,
                    "createdAt": utcnow_iso(), "updatedAt": utcnow_iso()}
             await db.plans.insert_one(dict(doc))
+
+    # Migration: rename cmsConnections → websiteConnections on legacy plans
+    await _migrate_plan_field_rename(db)
 
     # Admin credentials
     existing_admin = await db.admin_credentials.find_one(

@@ -320,3 +320,143 @@ async def generate_image(prompt: str, size: str = "1024x1024") -> str:
     logger.info("Image gen requested: %s", prompt[:80])
     seed = abs(hash(prompt)) % 100000
     return f"https://picsum.photos/seed/{seed}/1024/1024"
+
+
+# ---------- Internal / External link resolution (Master prompt part 5) ----------
+import re as _re_links
+
+
+def _best_internal_match(anchor: str, candidates: list[dict]) -> dict | None:
+    """Return the candidate article whose title best matches the anchor.
+
+    Pure token-overlap scoring — fast and deterministic. `candidates` is a list
+    of `{id, title, cmsUrl, slug}` dicts.
+    """
+    if not candidates:
+        return None
+    anchor_tokens = {w for w in _re_links.findall(r"[a-z0-9]+",
+                                                   anchor.lower()) if len(w) > 2}
+    if not anchor_tokens:
+        return None
+    best: dict | None = None
+    best_score = 0
+    for c in candidates:
+        title_tokens = {w for w in _re_links.findall(
+            r"[a-z0-9]+", (c.get("title") or "").lower()) if len(w) > 2}
+        if not title_tokens:
+            continue
+        overlap = len(anchor_tokens & title_tokens)
+        if overlap > best_score:
+            best_score = overlap
+            best = c
+    return best if best_score >= 1 else None
+
+
+async def _suggest_external_url(anchor: str, topic: str) -> str | None:
+    """Ask GPT for ONE authoritative external URL for the anchor text.
+
+    Returns a URL string or None. The model is restricted to reputable
+    domains (wikipedia, .gov, .edu, major news/industry sites).
+    """
+    system = (
+        "Reply with ONE real, authoritative URL (https) supporting the "
+        "anchor text. Prefer wikipedia.org, .gov, .edu, or top industry "
+        "sources. No commentary, no markdown. If unsure, reply NONE."
+    )
+    prompt = f"Topic: {topic}\nAnchor text: {anchor}"
+    try:
+        raw = (await chat_completion(system, prompt)).strip()
+        if not raw or raw.upper().startswith("NONE"):
+            return None
+        url = raw.split()[0].strip("<>`\"' ")
+        if url.startswith("http"):
+            return url
+    except Exception:
+        return None
+    return None
+
+
+_INT_LINK_RE = _re_links.compile(r"\[INTERNAL_LINK:\s*([^\]]+)\]")
+_EXT_LINK_RE = _re_links.compile(r"\[EXTERNAL_LINK:\s*([^\]]+)\]")
+
+
+async def resolve_article_links(content: str, topic: str,
+                                 internal_candidates: list[dict]) -> str:
+    """Replace `[INTERNAL_LINK: anchor]` and `[EXTERNAL_LINK: anchor]`
+    placeholders with real `<a>` tags. Unresolved placeholders are stripped
+    to plain anchor text so the published article is always clean.
+    """
+    if not content:
+        return content or ""
+
+    # 1) Internal links
+    def _resolve_internal(m: "_re_links.Match[str]") -> str:
+        anchor = m.group(1).strip()
+        match = _best_internal_match(anchor, internal_candidates)
+        if not match:
+            return anchor  # drop the placeholder, keep the words
+        href = (match.get("cmsUrl")
+                or (f"/{match['slug']}" if match.get("slug") else ""))
+        if not href:
+            return anchor
+        return f'<a href="{href}">{anchor}</a>'
+
+    content = _INT_LINK_RE.sub(_resolve_internal, content)
+
+    # 2) External links — fetch URLs in parallel (cap at 5 to limit cost)
+    ext_matches = list(_EXT_LINK_RE.finditer(content))
+    if ext_matches:
+        import asyncio as _aio
+        anchors = [m.group(1).strip() for m in ext_matches[:5]]
+        urls = await _aio.gather(
+            *[_suggest_external_url(a, topic) for a in anchors],
+            return_exceptions=True)
+        url_map: dict[str, str | None] = {}
+        for a, u in zip(anchors, urls):
+            url_map[a] = u if isinstance(u, str) else None
+
+        def _resolve_external(m: "_re_links.Match[str]") -> str:
+            anchor = m.group(1).strip()
+            url = url_map.get(anchor)
+            if not url:
+                return anchor
+            return (f'<a href="{url}" rel="nofollow noopener" '
+                    f'target="_blank">{anchor}</a>')
+
+        content = _EXT_LINK_RE.sub(_resolve_external, content)
+
+    return content
+
+
+def pick_category(topic: str,
+                   category_mapping: dict | None) -> dict | None:
+    """Pick the best matching WordPress category for the article topic.
+
+    `category_mapping` is shaped `{topic_label: {"id": <int>, "name": <str>}}`
+    (built by site_analyzer). Falls back to substring match if no perfect hit.
+    Returns the matched value dict or None.
+    """
+    if not category_mapping:
+        return None
+    topic_l = (topic or "").lower()
+    # Exact / startswith match first
+    for label, val in category_mapping.items():
+        if not val:
+            continue
+        if topic_l == (label or "").lower():
+            return val
+    # Token overlap match
+    topic_tokens = {w for w in _re_links.findall(r"[a-z0-9]+", topic_l)
+                    if len(w) > 2}
+    best = None
+    best_score = 0
+    for label, val in category_mapping.items():
+        if not val:
+            continue
+        label_tokens = {w for w in _re_links.findall(
+            r"[a-z0-9]+", (label or "").lower()) if len(w) > 2}
+        overlap = len(topic_tokens & label_tokens)
+        if overlap > best_score:
+            best_score = overlap
+            best = val
+    return best if best_score >= 1 else None

@@ -76,6 +76,26 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
                     openai_img, f"articles/{article_id}/hero.jpg",
                     content_type="image/jpeg")
 
+        # ── Master prompt Part 5 — resolve internal/external link placeholders
+        site_for_links = await db.sites.find_one({"id": site_id},
+                                                  {"_id": 0}) or {}
+        internal_candidates_cursor = db.articles.find(
+            {"siteId": site_id, "status": "PUBLISHED",
+             "deleted": {"$ne": True}, "id": {"$ne": article_id}},
+            {"_id": 0, "id": 1, "title": 1, "cmsUrl": 1, "slug": 1}
+        ).sort("publishedAt", -1).limit(50)
+        internal_candidates = await internal_candidates_cursor.to_list(50)
+        try:
+            gen["content"] = await llm.resolve_article_links(
+                gen.get("content", ""), search_term, internal_candidates)
+        except Exception as _e:
+            logger.warning("link resolution failed: %s", _e)
+
+        # ── Master prompt Part 4 — pick WordPress category
+        category = llm.pick_category(
+            search_term, (site_for_links or {}).get("categoryMapping"))
+        wp_cat_id = (category or {}).get("id") if category else None
+
         slug = "-".join(gen["title"].lower().split())[:100] or article_id[:8]
         await db.articles.update_one(
             {"id": article_id},
@@ -93,6 +113,9 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
                 "suggestedTags": gen.get("suggestedTags", []),
                 "featuredImageUrl": image_url,
                 "seoScore": gen["seoScore"],
+                "wordpressCategoryId": wp_cat_id,
+                "wordpressCategoryName": (category or {}).get("name")
+                                          if category else None,
                 "status": "DRAFT", "updatedAt": utcnow_iso(),
             }},
         )

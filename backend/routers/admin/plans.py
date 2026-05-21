@@ -24,6 +24,7 @@ class PlanBody(BaseModel):
     aiScansPerMonth: Optional[int] = None
     teamSeats: Optional[int] = None
     cmsConnections: Optional[int] = None
+    websiteConnections: Optional[int] = None
     brandVoiceModel: Optional[bool] = None
     competitorComparison: Optional[bool] = None
     prioritySupport: Optional[bool] = None
@@ -36,12 +37,22 @@ class PlanBody(BaseModel):
 async def list_plans():
     rows = await get_db().plans.find({}, {"_id": 0}).sort(
         "sortOrder", 1).to_list(100)
+    for r in rows:
+        if "websiteConnections" not in r and "cmsConnections" in r:
+            r["websiteConnections"] = r["cmsConnections"]
+        if "cmsConnections" not in r and "websiteConnections" in r:
+            r["cmsConnections"] = r["websiteConnections"]
     return ok(rows)
 
 
 @router.post("")
 async def create_plan(body: PlanBody):
     doc = body.model_dump(exclude_none=True)
+    # Master prompt Part 11 — keep cmsConnections/websiteConnections in sync
+    if "websiteConnections" in doc and "cmsConnections" not in doc:
+        doc["cmsConnections"] = doc["websiteConnections"]
+    elif "cmsConnections" in doc and "websiteConnections" not in doc:
+        doc["websiteConnections"] = doc["cmsConnections"]
     doc["id"] = str(uuid.uuid4())
     doc.setdefault("isActive", True)
     doc.setdefault("sortOrder", 100)
@@ -55,6 +66,10 @@ async def create_plan(body: PlanBody):
 @router.put("/{plan_id}")
 async def update_plan(plan_id: str, body: PlanBody):
     upd = {k: v for k, v in body.model_dump(exclude_none=True).items()}
+    if "websiteConnections" in upd and "cmsConnections" not in upd:
+        upd["cmsConnections"] = upd["websiteConnections"]
+    elif "cmsConnections" in upd and "websiteConnections" not in upd:
+        upd["websiteConnections"] = upd["cmsConnections"]
     upd["updatedAt"] = utcnow_iso()
     res = await get_db().plans.update_one({"id": plan_id}, {"$set": upd})
     if res.matched_count == 0:
