@@ -343,6 +343,23 @@ async def update_subscription(user_id: str, body: SubscriptionUpdateReq,
     except Exception:
         pass
 
+    # If status flipped from TRIALING → ACTIVE on a real plan, pre-generate
+    # the first week of articles (Part 3).
+    try:
+        prev_status = (sub or {}).get("status")
+        if (status == "ACTIVE" and prev_status == "TRIALING"
+                and body.planId):
+            site = await db.sites.find_one(
+                {"userId": user_id, "deleted": {"$ne": True}},
+                {"_id": 0}, sort=[("createdAt", 1)])
+            if site:
+                from services.trial import setup_plan_articles
+                import asyncio
+                asyncio.create_task(setup_plan_articles(
+                    user_id, site["id"], body.planId))
+    except Exception:
+        pass
+
     # Audit
     await log_action(
         "USER_PLAN_CHANGED" if body.planId else "USER_STATUS_CHANGED",

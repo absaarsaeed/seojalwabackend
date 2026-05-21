@@ -113,6 +113,15 @@ async def verify(
                 site.get("name"), site.get("userId"),
                 wp_version, php_version)
 
+    # Kick off auto-analysis if not yet done (best-effort, non-blocking semantics)
+    try:
+        if not site.get("analyzed"):
+            from services.site_analyzer import analyze_and_setup_site
+            import asyncio
+            asyncio.create_task(analyze_and_setup_site(site["id"]))
+    except Exception as e:
+        logger.warning("auto-analyzer kickoff failed: %s", e)
+
     return ok({
         "valid": True,
         "siteName": site["name"],

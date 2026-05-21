@@ -50,6 +50,10 @@ async def _media_upload(site_url: str, headers: dict, image_url: str,
 async def publish_article(site: dict, article: dict) -> dict:
     """Publish to WordPress via REST API. Returns
     `{success, cmsPostId?, cmsUrl?, error?}`.
+
+    Adds:
+      • white-label "Powered by SEO Jalwa" footer when plan.whiteLabel=False
+      • WordPress `categories` from article.wordpressCategoryId
     """
     site_url = site.get("url", "").rstrip("/")
     if not site_url.startswith("http"):
@@ -74,9 +78,29 @@ async def publish_article(site: dict, article: dict) -> dict:
         featured_id = await _media_upload(site_url, headers,
                                           article["featuredImageUrl"])
 
-    payload = {
+    # White-label branding (Part 10): append footer when plan does NOT
+    # have white_label enabled.
+    content = article.get("content", "")
+    white_label = False
+    try:
+        from core.database import get_db
+        sub = await get_db().subscriptions.find_one(
+            {"userId": site.get("userId"),
+             "status": {"$in": ["ACTIVE", "TRIALING"]}}, {"_id": 0})
+        if sub and sub.get("planId"):
+            plan = await get_db().plans.find_one(
+                {"id": sub["planId"]}, {"_id": 0})
+            white_label = bool((plan or {}).get("whiteLabel"))
+    except Exception:
+        white_label = False
+    if not white_label and "seojalwa.com" not in content:
+        content += ("\n\n<p><small>Published with "
+                    "<a href=\"https://seojalwa.com\">SEO Jalwa</a>"
+                    "</small></p>")
+
+    payload: dict = {
         "title": article.get("title", ""),
-        "content": article.get("content", ""),
+        "content": content,
         "status": "publish",
         "excerpt": article.get("excerpt", "") or "",
         "slug": article.get("slug", ""),
@@ -87,6 +111,13 @@ async def publish_article(site: dict, article: dict) -> dict:
     }
     if featured_id:
         payload["featured_media"] = featured_id
+    # Part 4 — intelligent category selection.
+    cat_id = article.get("wordpressCategoryId")
+    if cat_id:
+        try:
+            payload["categories"] = [int(cat_id)]
+        except (TypeError, ValueError):
+            pass
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:

@@ -221,6 +221,14 @@ async def verify_connection(site_id: str, user=Depends(get_current_user)):
             {"$set": {"wordpressConnected": True,
                       "lastSync": utcnow_iso(),
                       "updatedAt": utcnow_iso()}})
+        # Kick off auto-analysis (idempotent — service checks analyzed flag)
+        try:
+            from services.site_analyzer import analyze_and_setup_site
+            import asyncio
+            if not site.get("analyzed"):
+                asyncio.create_task(analyze_and_setup_site(site_id))
+        except Exception:
+            pass
         return ok({"connected": True,
                    "message": "WordPress connected",
                    "lastSync": utcnow_iso()})
