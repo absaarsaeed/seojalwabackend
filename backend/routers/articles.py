@@ -78,19 +78,61 @@ async def list_articles(
 @router.get("/calendar")
 async def calendar(siteId: str, year: int, month: int,
                    user=Depends(get_current_user)):
+    """Phase 3 Part 3 — enriched calendar.
+
+    Articles are grouped by either `publishedAt` (PUBLISHED) or
+    `scheduledAt` (SCHEDULED/QUEUED). Each entry carries the title (or
+    search term fallback), status, seoScore, wordCount, both timestamps,
+    featuredImageUrl, the live CMS URL, and a short excerpt.
+    """
     db = get_db()
     start = datetime(year, month, 1, tzinfo=timezone.utc)
     end_year = year + (1 if month == 12 else 0)
     end_month = 1 if month == 12 else month + 1
     end = datetime(end_year, end_month, 1, tzinfo=timezone.utc)
+    start_iso = start.isoformat()
+    end_iso = end.isoformat()
+
     rows = await db.articles.find({
         "userId": user["id"], "siteId": siteId,
-        "scheduledAt": {"$gte": start.isoformat(), "$lt": end.isoformat()},
-    }, {"_id": 0}).to_list(500)
+        "deleted": {"$ne": True},
+        "$or": [
+            {"scheduledAt": {"$gte": start_iso, "$lt": end_iso}},
+            {"publishedAt": {"$gte": start_iso, "$lt": end_iso}},
+        ],
+    }, {"_id": 0}).to_list(2000)
+
     grouped: dict[str, list] = {}
     for r in rows:
-        day = r["scheduledAt"][:10]
-        grouped.setdefault(day, []).append(r)
+        published_at = r.get("publishedAt")
+        scheduled_at = r.get("scheduledAt")
+        # Bucket by published date if available, else scheduled date
+        bucket = (published_at or scheduled_at or "")[:10]
+        if not bucket:
+            continue
+        status = r.get("status", "DRAFT")
+        title = (r.get("title")
+                 if r.get("title") and r.get("title") != r.get("searchTerm")
+                 else (r.get("title") or r.get("searchTerm") or "Untitled"))
+        # Excerpt — first 120 chars stripped of HTML
+        excerpt = r.get("excerpt") or ""
+        if not excerpt and r.get("content"):
+            text = re.sub(r"<[^<]+?>", "", r.get("content", ""))
+            excerpt = text[:120].strip()
+        entry = {
+            "id": r.get("id"),
+            "title": title,
+            "searchTerm": r.get("searchTerm", ""),
+            "status": status,
+            "seoScore": r.get("seoScore", 0),
+            "wordCount": r.get("wordCount", 0),
+            "publishedAt": published_at,
+            "scheduledAt": scheduled_at,
+            "featuredImageUrl": r.get("featuredImageUrl", ""),
+            "cmsUrl": r.get("cmsUrl", ""),
+            "excerpt": excerpt,
+        }
+        grouped.setdefault(bucket, []).append(entry)
     return ok(grouped)
 
 

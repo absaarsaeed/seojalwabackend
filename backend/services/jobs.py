@@ -196,6 +196,14 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
                                        f"/dashboard/articles/{article_id}"})
                     except Exception:
                         pass
+                    # Phase 3 Part 12 — recalculate growth score after publish
+                    try:
+                        from services.growth_score import (
+                            calculate_growth_score)
+                        await calculate_growth_score(site_id, user_id)
+                    except Exception as _gse:
+                        logger.warning("growth score recalc failed: %s",
+                                       _gse)
                     user = await db.users.find_one(
                         {"id": user_id}, {"_id": 0, "password": 0})
                     if user:
@@ -307,6 +315,12 @@ async def run_ai_visibility_scan(job_id: str, site_id: str, user_id: str):
                            "link": "/dashboard/ai-visibility"})
         except Exception:
             pass
+        # Phase 3 Part 12 — recalculate growth score after scan
+        try:
+            from services.growth_score import calculate_growth_score
+            await calculate_growth_score(site_id, user_id)
+        except Exception as _gse:
+            logger.warning("growth score recalc after scan failed: %s", _gse)
     except Exception as e:
         logger.exception("ai visibility scan failed")
         await _update_job(job_id, status="failed", error=str(e))

@@ -210,6 +210,20 @@ class SiteQuotaReq(BaseModel):
     quotaPerMonth: int
 
 
+class DismissPluginReq(BaseModel):
+    version: str
+
+
+@router.put("/dismiss-plugin-banner")
+async def dismiss_plugin_banner(body: DismissPluginReq,
+                                 user=Depends(get_current_user)):
+    await get_db().users.update_one(
+        {"id": user["id"]},
+        {"$set": {"dismissedPluginVersion": body.version,
+                  "updatedAt": utcnow_iso()}})
+    return ok({"dismissed": True, "version": body.version})
+
+
 def _month_start_iso() -> str:
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)

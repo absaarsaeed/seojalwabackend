@@ -160,7 +160,9 @@ async def generate_article(
     key_takeaways = data.get("keyTakeaways") or []
     faq_schema = data.get("faqSchema") or []
     suggested_tags = data.get("suggestedTags") or []
-    word_count = int(data.get("wordCount") or len(content.split()) or 0)
+    # Strip HTML for an accurate word count (Phase 3 Part 11)
+    text_for_count = re.sub(r"<[^<]+?>", " ", content)
+    word_count = int(data.get("wordCount") or len(text_for_count.split()) or 0)
     read_time = int(data.get("estimatedReadTime") or max(1, word_count // 200))
 
     seo_score = calculate_seo_score(

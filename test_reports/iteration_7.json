@@ -1,0 +1,48 @@
+{
+  "summary": "Phase 3 (12-part batch) backend verification — 14/14 PASS on new /app/backend/tests/test_iteration7_phase3.py, AND 9/9 PASS on the legacy /app/backend/tests/test_iteration6_phase2.py (iteration-6's two HIGH bugs — coupon PERCENT vs PERCENTAGE and destructive admin PUT plan features — are now fixed in main). Maintenance mode middleware verified end-to-end (public /api/plans → 503 MAINTENANCE_MODE w/ message; /api/admin/plans → 200; cleanly disabled after test). Legal pages public+admin CRUD verified. Blog rich editor (slug uniqueness with -2 suffix, readTime derived from HTML-stripped content, author defaults, status→publishedAt) verified. Upload-image endpoint exists and currently 200s (R2 storage layer doesn't fail in this env). Dashboard stats bar present in both empty-state and active-site branches. Plugin update banner + dismiss endpoint flow verified. Calendar enriched payload (cmsUrl, scheduledAt, excerpt HTML-stripped) verified. Announcements preview-count matches db.users count; POST returns correct recipientCount and IN_APP channels list. Admin analytics overview returns users.byPlan + 30-day dailySignups + MRR/ARR + content + funnel. Email log detail (GET /api/admin/emails/{id}) now includes htmlBody+textBody fields. wordCount HTML-stripping pattern present in services/llm.py. growth_score module imports cleanly and jobs.py references the recalc hook.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/register", "issue": "Pre-existing in-memory 5/hr per-IP rate limit still trips when smoke_phase1.sh runs immediately before pytest. Workaround in test suite: mint JWTs server-side via core.security.create_access_token() — bypassed cleanly."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iteration7_phase3.py",
+    "/app/test_reports/pytest/iteration7_phase3.xml"
+  ],
+  "action_items": [
+    "(Carry-over, low priority) Externalise /api/auth/register rate limit (or scope by email) so end-to-end test sweeps don't trip 429. Not a blocker."
+  ],
+  "critical_code_review_comments": [
+    "PART 1 ✓ stats block computed from db.articles aggregate of wordCount where status=PUBLISHED. costSavings = words * 0.03, timeSaved = words/200 — both rounded. Empty-state branch correctly returns all zeros.",
+    "PART 2 ✓ plugin_version is a settings doc keyed by {key:'plugin_version'}. PUT /api/user/dismiss-plugin-banner stores dismissedPluginVersion on the user; overview equates dismissed = (dismissedPluginVersion == latestVersion). Logic sound; one nit: 'available' only true when BOTH currentVersion AND latestVersion are non-empty AND differ — sites without pluginVersion show available=false even when a newer plugin exists. May be intentional (no plugin installed = nothing to update).",
+    "PART 3 ✓ Calendar returns dict keyed by YYYY-MM-DD; each entry has all 11 spec keys. Bucketing prefers publishedAt over scheduledAt as spec'd. Excerpt is HTML-stripped via re.sub(r'<[^<]+?>', '') with 120-char window.",
+    "PART 4 ✓ Slug uniqueness loop appends -2, -3, … _read_time() strips HTML before counting; floors at 1 min. Author defaults to 'SEO Jalwa Team'. PUT to PUBLISHED stamps publishedAt only if not already set (idempotent). Legacy mirror keys metaTitle/metaDescription updated alongside seo* keys.",
+    "PART 4b ✓ /upload-image accepts multipart, 10MB cap, safe-name sanitization, key shape 'blog/{folder}/images/<8-hex>-<safe>'. Returns {url, key, size, contentType}. Endpoint reached and responded 200 — R2 path was not exercised in failure mode in this env but the endpoint exists.",
+    "PART 5 ✓ Maintenance middleware allow-list includes /api/admin, /api/auth/login, /api/auth/admin, /api/health, /api/legal, /api/docs, /api/openapi.json, /api/redoc. Reads BOTH settings.id='general' and legacy settings.key='maintenance_mode' so admin UI and seed paths both work. Returns proper 503 + MAINTENANCE_MODE code + message body. Try/except around DB read prevents lockout on Mongo blip.",
+    "PART 6 ✓ ALLOWED_KEYS = {privacy-policy, terms-of-service, cookie-policy}. Public GET on unknown key → 404 NOT_FOUND. PUT upserts and stamps lastUpdatedAt. Seed runs in startup hook and is idempotent (only inserts if missing).",
+    "PART 7 ✓ preview-count is a separate cheap endpoint, accepts ALL/FREE/STARTER/GROWTH/AGENCY. _audience_user_ids() pulls real userIds from subscriptions + users. POST stores channels[] (split BOTH into ['EMAIL','IN_APP']). recipientCount = len(real recipients). audit log written.",
+    "PART 8 ✓ /overview returns 4 sub-blocks: users (total, byPlan{free,starter,growth,agency,other}, newToday/Week/Month, dailySignups[30]); revenue (mrr/arr/thisMonth/lastMonth/dailyRevenue[30]); content (articlesGenerated, articlesThisMonth, aiScansRun, totalWordsWritten); funnel (registered, connectedSite, generatedArticle, ranScan, upgradedToPaid). arr ≈ mrr*12 within rounding. Real aggregations over plans/subscriptions/invoices/articles/ai_visibility_scans collections — no mocks.",
+    "PART 9 ✓ services/email._write_log now persists htmlBody+textBody on every code path (sendgrid, resend, SKIPPED). When no provider is configured (SKIPPED), bodies will be empty strings but fields are present — verified by triggering /billing/checkout/.../complete and reading /api/admin/emails/{id}.",
+    "PART 11 ✓ services/llm.py contains HTML-strip via regex before computing wordCount. Verified by grep.",
+    "PART 12 ✓ services/growth_score.calculate_growth_score and schedule_recalc both present. services/jobs.py references the growth_score module in publish/scan code paths. End-to-end GPT-4o generation was NOT triggered (would have taken 30-60s+ and is rate-limited); per spec this is acceptable — module-import + hook-reference check is the agreed validation.",
+    "Cross-cutting nit: maintenance middleware whitelists /api/admin (full prefix). That means admins can still hit any admin endpoint during maintenance — intended. But also note /api/admin includes /api/admin/blog/upload-image, /api/admin/announcements/* etc. — verify by design that admin sends during maintenance is desired behaviour (it is, per spec).",
+    "Cross-cutting nit: announcement preview-count uses _audience_user_ids which for ALL returns ALL user ids regardless of deleted flag elsewhere — counted vs db.users.count_documents({deleted:{$ne:true}}) and they matched in this env, but if soft-deleted users get subscription rows the two could diverge. Low risk."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration7_phase3.py (NEW — 14 pytest cases, 14/14 PASS)",
+    "/app/test_reports/pytest/iteration7_phase3.xml (NEW — JUnit XML output)"
+  ],
+  "success_rate": {
+    "iteration7_new_tests": "14/14 (100%)",
+    "iteration6_regression": "9/9 (100%) — both prior HIGH bugs are fixed",
+    "backend": "23/23 across both files (100%)"
+  },
+  "test_credentials": "Admin jalwa/jalwaadmin (X-Admin-Token). Test users minted server-side via core.security.create_access_token(uid) + direct db.users.insert_one — emails of form i7_<ts>_<uuid>@seojalwa.com / Testing12345!.",
+  "seed_data_creation": "Each test mints a fresh user (+ optional site + optional subscription on chosen plan). PART 1 inserts a PUBLISHED article with wordCount=800. PART 2 seeds settings.plugin_version=1.0.2 (left in DB; harmless). PART 3 inserts 2 calendar articles. PART 4 creates 2 blog posts and deletes both in cleanup. PART 5 toggles general.maintenanceMode True→False (cleared in finally). PART 6 PUTs new terms content then restores the original in finally. PART 7 creates one announcement (kept). PART 9 triggers checkout→complete which writes invoice + subscription rows for a throw-away user.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Recommended run order to avoid the /auth/register rate-limit flake: `pytest /app/backend/tests/test_iteration7_phase3.py /app/backend/tests/test_iteration6_phase2.py -v`. Total runtime ~30s. Both files use minted JWTs so register endpoint is not invoked. If you also want to run smoke_phase1.sh, do it FIRST or wait 3+ min after pytest. PART 5 (maintenance mode) is destructive while running — it briefly turns the public API off; expect /api/plans to 503 for ~0.5s mid-test. The finally block always disables it.",
+  "rca of the issue": "No new bugs uncovered in Phase 3. Both HIGH bugs flagged in iteration 6 (coupon PERCENT/PERCENTAGE vocabulary mismatch; admin PUT plan features replacing instead of merging) are now fixed — confirmed by re-running test_iteration6_phase2.py end-to-end with 9/9 PASS including the previously-failing PART 7 coupon discount assertion."
+}

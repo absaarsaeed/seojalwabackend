@@ -66,6 +66,9 @@ async def lifespan(app: FastAPI):
     try:
         from seed import run_seed
         await run_seed()
+        # Phase 3 Part 6 — seed default legal pages
+        from routers.legal import seed_legal_pages
+        await seed_legal_pages()
     except Exception as e:
         log.warning("seed skipped: %s", e)
 
@@ -106,6 +109,58 @@ app.add_exception_handler(APIError, api_error_handler)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(HTTPException, http_error_handler)
 app.add_exception_handler(Exception, generic_error_handler)
+
+
+# ── Phase 3 Part 5 — maintenance-mode middleware ──────────────────────
+from fastapi.responses import JSONResponse  # noqa: E402
+
+# Always-allowed prefixes (admin must be able to turn maintenance OFF)
+_MAINT_ALLOWLIST_PREFIXES = (
+    "/api/admin",
+    "/api/auth/login",
+    "/api/auth/admin",
+    "/api/health",
+    "/api/legal",
+    "/health",
+    "/api/docs",
+    "/api/openapi.json",
+    "/api/redoc",
+)
+
+
+@app.middleware("http")
+async def maintenance_middleware(request, call_next):
+    path = request.url.path
+    if (not path.startswith("/api/")
+            or any(path.startswith(p) for p in _MAINT_ALLOWLIST_PREFIXES)):
+        return await call_next(request)
+    try:
+        db = get_db()
+        # Two storage shapes — admin UI saves under the `general` doc;
+        # legacy seeds write a dedicated key/value doc.
+        general = await db.settings.find_one(
+            {"id": "general"}, {"_id": 0,
+                                "maintenanceMode": 1,
+                                "maintenanceMessage": 1}) or {}
+        legacy = await db.settings.find_one(
+            {"key": "maintenance_mode"}, {"_id": 0}) or {}
+        active = (bool(general.get("maintenanceMode"))
+                  or bool(legacy.get("value")))
+        if active:
+            msg = (general.get("maintenanceMessage")
+                   or legacy.get("maintenanceMessage")
+                   or "We're under maintenance. Back shortly!")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False, "error": msg,
+                    "code": "MAINTENANCE_MODE",
+                    "statusCode": 503,
+                },
+            )
+    except Exception:
+        pass
+    return await call_next(request)
 
 
 # Health checks — both /health (root) and /api/health
@@ -156,6 +211,11 @@ app.include_router(dashboard.router, prefix=PREFIX)
 app.include_router(pages.router, prefix=PREFIX)
 app.include_router(feedback.public_router, prefix=PREFIX)
 app.include_router(public.router, prefix=PREFIX)
+
+# Phase 3 Part 6 — legal pages (public + admin)
+from routers import legal as legal_module  # noqa: E402
+app.include_router(legal_module.public_router, prefix=PREFIX)
+app.include_router(legal_module.admin_router, prefix=PREFIX)
 
 # Admin
 app.include_router(admin_auth.router, prefix=PREFIX)

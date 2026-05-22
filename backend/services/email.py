@@ -83,7 +83,8 @@ async def _send_via_resend(to: str, subject: str, html: str,
 async def _write_log(provider: str, to: str, subject: str,
                      template: str, status: str, error: str = "",
                      status_code: int | None = None,
-                     user_id: str | None = None) -> None:
+                     user_id: str | None = None,
+                     html_body: str = "", text_body: str = "") -> None:
     """Best-effort write into the `email_logs` collection."""
     import uuid as _uuid
     try:
@@ -98,6 +99,8 @@ async def _write_log(provider: str, to: str, subject: str,
             "provider": provider.upper() if provider else None,
             "statusCode": status_code,
             "errorMessage": error or None,
+            "htmlBody": html_body or "",
+            "textBody": text_body or "",
             "sentAt": utcnow_iso(),
         })
     except Exception as e:  # noqa: BLE001
@@ -137,7 +140,7 @@ async def send_email(
                           "SENT" if result.get("success") else "FAILED",
                           error=str(result.get("error", "")),
                           status_code=result.get("status_code"),
-                          user_id=user_id)
+                          user_id=user_id, html_body=html, text_body=text or "")
         return result
 
     # 2) Resend (fallback)
@@ -160,7 +163,7 @@ async def send_email(
                           "SENT" if result.get("success") else "FAILED",
                           error=str(result.get("error", "")),
                           status_code=result.get("status_code"),
-                          user_id=user_id)
+                          user_id=user_id, html_body=html, text_body=text or "")
         return result
 
     # 3) Neither configured
@@ -170,7 +173,7 @@ async def send_email(
         to, template)
     await _write_log("", to, subject, template, "SKIPPED",
                       error="no_email_provider_configured",
-                      user_id=user_id)
+                      user_id=user_id, html_body=html, text_body=text or "")
     return {"success": False, "skipped": True, "to": to,
             "template": template,
             "error": "no_email_provider_configured"}

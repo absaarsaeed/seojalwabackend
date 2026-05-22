@@ -198,6 +198,10 @@ async def overview(siteId: Optional[str] = None,
             "hasGeneratedArticle": False,
             "hasRunScan": False,
             "hasArticleSettings": False,
+            "stats": {"totalWordsWritten": 0, "costSavings": 0,
+                       "timeSaved": 0, "articlesPublished": 0},
+            "pluginUpdate": {"available": False, "currentVersion": "",
+                              "latestVersion": "", "dismissed": False},
         })
 
     month_start = _month_start_iso()
@@ -328,6 +332,37 @@ async def overview(siteId: Optional[str] = None,
     has_article_settings = (await db.article_settings.count_documents({
         "siteId": site["id"]})) > 0
 
+    # ── Phase 3 Part 1 — stats bar (words, savings, time saved)
+    words_agg = await db.articles.aggregate([
+        {"$match": {"siteId": site["id"], "status": "PUBLISHED",
+                     "deleted": {"$ne": True}}},
+        {"$group": {"_id": None, "words": {"$sum": "$wordCount"}}},
+    ]).to_list(1)
+    total_words = words_agg[0]["words"] if words_agg else 0
+    stats_block = {
+        "totalWordsWritten": int(total_words or 0),
+        "costSavings": round((total_words or 0) * 0.03, 2),
+        "timeSaved": round((total_words or 0) / 200, 1),
+        "articlesPublished": articles_published_total,
+    }
+
+    # ── Phase 3 Part 2 — plugin update banner
+    plugin_setting = await db.settings.find_one(
+        {"key": "plugin_version"}, {"_id": 0, "value": 1}) or {}
+    latest_version = plugin_setting.get("value", "")
+    current_version = site.get("pluginVersion") or ""
+    user_for_dismiss = await db.users.find_one(
+        {"id": user["id"]},
+        {"_id": 0, "dismissedPluginVersion": 1}) or {}
+    dismissed_for = user_for_dismiss.get("dismissedPluginVersion")
+    plugin_update = {
+        "available": (bool(latest_version) and bool(current_version)
+                      and current_version != latest_version),
+        "currentVersion": current_version,
+        "latestVersion": latest_version,
+        "dismissed": dismissed_for == latest_version,
+    }
+
     return ok({
         "site": {
             "id": site["id"], "name": site.get("name"),
@@ -359,4 +394,6 @@ async def overview(siteId: Optional[str] = None,
         "hasGeneratedArticle": has_generated,
         "hasRunScan": has_run_scan,
         "hasArticleSettings": has_article_settings,
+        "stats": stats_block,
+        "pluginUpdate": plugin_update,
     })
