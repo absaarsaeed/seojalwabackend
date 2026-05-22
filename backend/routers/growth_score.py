@@ -16,14 +16,54 @@ class CalcReq(BaseModel):
 
 @router.get("")
 async def get_score(siteId: str, user=Depends(get_current_user)):
+    """Always return a valid structure — never null/404. When no scores
+    exist yet, every component is 0 and a friendly onboarding message
+    is included."""
     db = get_db()
-    latest = await db.growth_scores.find_one(
+    history_docs = await db.growth_scores.find(
         {"siteId": siteId, "userId": user["id"]},
-        {"_id": 0}, sort=[("calculatedAt", -1)])
-    history = await db.growth_scores.find(
-        {"siteId": siteId, "userId": user["id"]},
-        {"_id": 0}).sort("calculatedAt", -1).limit(30).to_list(30)
-    return ok({"latest": latest, "history": history})
+        {"_id": 0}).sort("calculatedAt", -1).limit(8).to_list(8)
+
+    history = [{
+        "score": h.get("score", 0),
+        "calculatedAt": h.get("calculatedAt", h.get("createdAt", "")),
+    } for h in reversed(history_docs)]  # oldest → newest for chart
+
+    if not history_docs:
+        return ok({
+            "score": 0,
+            "breakdown": {
+                "aiVisibility": 0, "seoContent": 0,
+                "socialConsistency": 0, "trafficTrend": 0,
+            },
+            "history": [],
+            "trend": "stable",
+            "change": 0,
+            "latest": None,  # legacy
+            "message": ("Run your first AI scan to start building "
+                        "your score"),
+        })
+
+    latest = history_docs[0]
+    prev = history_docs[1] if len(history_docs) > 1 else None
+    change = (latest.get("score", 0) - (prev or {}).get("score", 0)) \
+        if prev else 0
+    trend = "up" if change > 2 else ("down" if change < -2 else "stable")
+
+    return ok({
+        "score": latest.get("score", 0),
+        "breakdown": {
+            "aiVisibility": latest.get("aiVisibilityComponent", 0),
+            "seoContent": latest.get("seoContentComponent", 0),
+            "socialConsistency": latest.get(
+                "socialConsistencyComponent", 0),
+            "trafficTrend": latest.get("trafficTrendComponent", 0),
+        },
+        "history": history,
+        "trend": trend,
+        "change": change,
+        "latest": latest,  # legacy
+    })
 
 
 @router.post("/calculate")

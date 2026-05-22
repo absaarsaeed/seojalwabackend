@@ -168,6 +168,13 @@ async def user_detail(user_id: str):
         raise APIError("User not found", "NOT_FOUND", 404)
     sub = await db.subscriptions.find_one(
         {"userId": user_id}, {"_id": 0}, sort=[("createdAt", -1)])
+    # Populate plan on subscription so the admin UI can render limits
+    if sub and sub.get("planId"):
+        plan = await db.plans.find_one(
+            {"id": sub["planId"]}, {"_id": 0})
+        if plan:
+            sub["plan"] = plan
+
     inv = await db.invoices.find({"userId": user_id}, {"_id": 0}).to_list(100)
     sites = await db.sites.find(
         {"userId": user_id, "deleted": {"$ne": True}},
@@ -175,14 +182,58 @@ async def user_detail(user_id: str):
     social = await db.social_accounts.find(
         {"userId": user_id},
         {"_id": 0, "accessToken": 0, "refreshToken": 0}).to_list(100)
+
+    # All-time totals
+    total_articles = await db.articles.count_documents(
+        {"userId": user_id, "deleted": {"$ne": True}})
+    total_scans = await db.ai_visibility_scans.count_documents(
+        {"userId": user_id})
+    total_clicks_agg = await db.articles.aggregate([
+        {"$match": {"userId": user_id, "deleted": {"$ne": True}}},
+        {"$group": {"_id": None, "clicks": {"$sum": "$clicks"}}},
+    ]).to_list(1)
+    total_clicks = total_clicks_agg[0]["clicks"] if total_clicks_agg else 0
+    site_ids = [s["id"] for s in sites]
+    latest_growth = await db.growth_scores.find_one(
+        {"siteId": {"$in": site_ids}}, {"_id": 0},
+        sort=[("calculatedAt", -1)]) if site_ids else None
+    growth_score = (latest_growth or {}).get("score", 0)
+
+    # This-month usage counts
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0,
+                               microsecond=0).isoformat()
+    articles_month = await db.articles.count_documents({
+        "userId": user_id, "deleted": {"$ne": True},
+        "createdAt": {"$gte": month_start}})
+    posts_month = await db.social_posts.count_documents({
+        "userId": user_id, "createdAt": {"$gte": month_start}})
+    scans_month = await db.ai_visibility_scans.count_documents({
+        "userId": user_id, "createdAt": {"$gte": month_start}})
+    seats_used = await db.team_members.count_documents({
+        "ownerId": user_id, "status": "ACTIVE"})
+
     usage = {
-        "articles": await db.articles.count_documents(
-            {"userId": user_id, "deleted": {"$ne": True}}),
-        "socialPosts": await db.social_posts.count_documents({"userId": user_id}),
-        "aiScans": await db.ai_visibility_scans.count_documents({"userId": user_id}),
+        # All-time (legacy keys preserved for backward compat)
+        "articles": total_articles,
+        "socialPosts": await db.social_posts.count_documents(
+            {"userId": user_id}),
+        "aiScans": total_scans,
+        # This-month rollups (per spec)
+        "articlesThisMonth": articles_month,
+        "socialPostsThisMonth": posts_month,
+        "aiScansThisMonth": scans_month,
+        "teamSeatsUsed": seats_used,
+    }
+    stats = {
+        "totalArticles": total_articles,
+        "totalClicks": total_clicks,
+        "totalScans": total_scans,
+        "growthScore": growth_score,
     }
     return ok({"user": user, "subscription": sub, "invoices": inv,
-               "sites": sites, "socialAccounts": social, "usage": usage})
+               "sites": sites, "socialAccounts": social,
+               "usage": usage, "stats": stats})
 
 
 @router.delete("/users/{user_id}",
@@ -333,13 +384,38 @@ async def update_subscription(user_id: str, body: SubscriptionUpdateReq,
         changes = {k: {"from": None, "to": v}
                    for k, v in updates.items() if k != "updatedAt"}
 
-    # Notify the user
+    # Notify the user (in-app + email)
     from services import email as _email
+    try:
+        from services.notifications import create_notification
+        plan_label = ""
+        if body.planId:
+            plan_doc = await db.plans.find_one(
+                {"id": body.planId}, {"_id": 0, "name": 1})
+            plan_label = (plan_doc or {}).get("name") or ""
+        await create_notification(
+            user_id, "SUBSCRIPTION_RENEWED",
+            "Your subscription was updated",
+            (f"You are now on the {plan_label} plan." if plan_label
+             else "Your subscription details were updated by our team."),
+            icon="credit-card", link="/dashboard/billing")
+    except Exception:
+        pass
     try:
         await _email.announcement_email(
             user["email"], "Your subscription has been updated",
             "<p>Your SEO Jalwa subscription has been updated by our team. "
             "Sign in to view the new plan details.</p>")
+    except Exception:
+        pass
+    try:
+        from services.activity import log_activity
+        await log_activity(
+            user_id, "SUBSCRIPTION_UPGRADED" if body.planId
+            else "SETTINGS_UPDATED",
+            metadata={"planId": body.planId, "status": status,
+                       "title": "Subscription updated",
+                       "link": "/dashboard/billing"})
     except Exception:
         pass
 

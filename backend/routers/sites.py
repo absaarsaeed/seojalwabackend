@@ -130,6 +130,15 @@ async def create_site(body: SiteCreate, user=Depends(get_current_user)):
     }
     await get_db().sites.insert_one(dict(site))
     site.pop("_id", None)
+    try:
+        from services.activity import log_activity
+        await log_activity(user["id"], "SITE_ADDED",
+                            metadata={"siteId": site["id"],
+                                       "name": site["name"],
+                                       "url": cleaned_url,
+                                       "platform": body.platform})
+    except Exception:
+        pass
     return created(site, "Site created")
 
 

@@ -1,0 +1,49 @@
+{
+  "summary": "Validated all 11 fixes from this iteration plus baselines. Run individually: smoke_phase1.sh 29/29 PASS, test_master_launch.py + test_master_launch_e2e.py 23/23 PASS, NEW test_iteration4_fixes.py 11/11 PASS (covers FIX 1, 2, 2b, 3, 4, 5, 6, 7, 8, 10, 11). All requested behaviours verified end-to-end against the live preview URL: admin user detail now includes populated subscription.plan + usage + stats; dashboard overview reshaped with growthScore/breakdown/booleans/trial/metrics and graceful empty-state (200 instead of 404) when user has no site; growth-score returns valid zero structure with onboarding message; ai-visibility/latest returns data:null + 'No scans yet'; analytics/overview reshaped with gscConnected/metrics/trend/topArticles/topQueries; GSC connect now correctly returns 400 GSC_NOT_CONFIGURED (the iteration_3 await-on-None 500 is FIXED); articles/calendar returns dict (empty {} or grouped); activity logging fires for SITE_ADDED + ARTICLE_GENERATED + USER_REGISTERED (verified through dashboard.recentActivity after BackgroundTask sleep 10s); admin subscription update creates SUBSCRIPTION_RENEWED notification AND SUBSCRIPTION_UPGRADED activity log; cascade delete returns counts including users/sites/articles/subscriptions and the user is gone (404 on follow-up GET).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/register", "issue": "In-memory IP-based rate limiter (~30/hr) is still keyed on ingress IP — running the full suite (smoke + master_launch + iteration4_fixes) sequentially hits 429 RATE_LIMITED on the last 2 registrations of iteration4 (same root cause flagged in iteration_2/iteration_3). Each suite passes individually. Recommend externalising the rate-limit bucket or skipping it for test traffic. Carried over, not introduced by this iteration."},
+      {"endpoint": "POST /api/auth/register", "issue": "Auto-site creation from the previous schema is gone — registration now returns sites:[]. test_master_launch_e2e.py:test_01 still passes because it inspects /me afterwards and the auto-site is recreated there, but the new tests must POST /api/sites explicitly. Not a regression — just behaviour drift worth confirming was intentional."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4_fixes.py",
+    "/app/backend/tests/test_master_launch.py",
+    "/app/backend/tests/test_master_launch_e2e.py",
+    "/app/backend/tests/smoke_phase1.sh",
+    "/app/test_reports/pytest/iteration4_fixes.xml",
+    "/app/test_reports/pytest/master_launch_iter4.xml",
+    "/app/test_reports/pytest/iteration4_full.xml"
+  ],
+  "action_items": [
+    "Optional: externalise the in-memory rate-limit bucket so back-to-back test runs don't 429 on /api/auth/register (carried over from iteration_2). Workaround: run each suite separately, or wait ~1h between full sweeps."
+  ],
+  "critical_code_review_comments": [
+    "FIX 1 verified: GET /api/admin/users/{userId} response.data now contains subscription.plan (populated dict with name), usage.{articlesThisMonth,socialPostsThisMonth,aiScansThisMonth,teamSeatsUsed}, stats.{totalArticles,totalClicks,totalScans,growthScore}. Replaces the previous skeletal subscription.planId-only payload.",
+    "FIX 2 verified: dashboard/overview now exposes growthScore.{score,change,breakdown.{aiVisibility,seoContent,socialConsistency,trafficTrend}}, nextScheduledArticle, topPerformingArticle, hasConnectedSite/hasGeneratedArticle/hasRunScan booleans, trial.{isTrialing,daysRemaining,trialEndsAt}, and metrics.{articlesThisMonth,articlesPublished,totalClicks,avgPosition,aiVisibilityScore}. Shape is stable.",
+    "FIX 2b verified: dashboard/overview WITHOUT siteId AND with no sites returns 200 (not 404), hasConnectedSite:false, site:null, all numeric metrics:0, recommendations contains 'Connect your first site' onboarding entry. Empty-state path is correct.",
+    "FIX 3 verified: growth-score returns 200 with score:0, all four breakdown components:0, history:[], message 'Run your first AI scan to start building your score'. No more 404/null for first call.",
+    "FIX 6 verified — REGRESSION FROM ITERATION_3 IS FIXED: /api/analytics/gsc/connect now returns 400 GSC_NOT_CONFIGURED instead of 500 await-on-None. The services/gsc.py async signature mismatch flagged in iteration_3.json is resolved.",
+    "FIX 8 verified: SITE_ADDED is logged on POST /api/sites; ARTICLE_GENERATED is logged inside services/jobs.run_article_generation BackgroundTask (~5-10s). USER_REGISTERED is also present. Note the article job still completes with status=completed but content='' when smoke_phase1.sh has overwritten the OpenAI key — this is the known graceful-degradation behaviour from iteration_3, NOT a regression.",
+    "FIX 10 verified: PUT /api/admin/users/{userId}/subscription now (a) returns subscription.plan populated as Growth dict, (b) creates a SUBSCRIPTION_RENEWED notification with title 'Your subscription was updated' (visible at /api/notifications), (c) writes a SUBSCRIPTION_UPGRADED entry to dashboard.recentActivity. All three side-effects observed.",
+    "FIX 11 verified: DELETE /api/admin/users/{userId} returns cascadedDeletes with users:1, sites/articles/subscriptions counts present, follow-up GET returns 404.",
+    "FIX 4, 5, 7 verified — see test pass status."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration4_fixes.py (NEW — 11 pytest cases covering FIX 1/2/2b/3/4/5/6/7/8/10/11)"
+  ],
+  "success_rate": {
+    "iteration4_new_tests": "11/11 (100%)",
+    "smoke_baseline": "29/29 (100%)",
+    "master_launch_baseline": "23/23 (100%)",
+    "combined_when_run_in_one_shell": "32/34 — 2 failures are flaky 429 RATE_LIMITED on /api/auth/register, both pass when iteration4_fixes is run as its own pytest invocation"
+  },
+  "test_credentials": "Admin jalwa/jalwaadmin (X-Admin-Token). New users created per test as fix_<ts>_<uuid>@seojalwa.com / Testing12345!",
+  "seed_data_creation": "Each iteration4 test registers a fresh user (no global seeding). test_fix11 deletes its user. test_fix2b leaves a no-site user. No DB cleanup required.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run sequence to validate iteration_4 deliverables: (1) `bash /app/backend/tests/smoke_phase1.sh` (29/29). (2) `pytest /app/backend/tests/test_master_launch.py /app/backend/tests/test_master_launch_e2e.py -v` (23/23). (3) `pytest /app/backend/tests/test_iteration4_fixes.py -v` (11/11). DO NOT chain all three in one bash invocation without ~60s sleep — the auth/register rate limiter (in-memory, IP-keyed) will start returning 429 after ~30 registrations and cause flaky failures in iteration4 (which uses a fresh user per test). Each suite passes 100% when run on its own. The smoke script's last step still overwrites the OpenAI api key with a junk value, so any subsequent article-generation will save content='' but status=completed (graceful degradation, not a regression). The iteration_3 GSC connect await-on-None 500 is now CONFIRMED FIXED — endpoint returns 400 GSC_NOT_CONFIGURED.",
+  "rca of the issue": "No new bugs found. The only outstanding concern is the in-memory rate-limit bucket on /api/auth/register that pollutes cross-test runs from the same egress IP — this is unchanged from iteration_2/iteration_3 and is environmental, not iteration_4 logic. All 11 spec items are implemented correctly and verified end-to-end."
+}

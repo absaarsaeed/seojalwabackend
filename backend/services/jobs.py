@@ -132,6 +132,17 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
                 icon="file-text", link=f"/dashboard/articles/{article_id}")
         except Exception:
             pass
+        try:
+            from services.activity import log_activity
+            await log_activity(
+                user_id, "ARTICLE_GENERATED",
+                metadata={"articleId": article_id,
+                           "title": gen["title"],
+                           "seoScore": gen["seoScore"],
+                           "siteId": site_id,
+                           "link": f"/dashboard/articles/{article_id}"})
+        except Exception:
+            pass
 
         # Auto-publish if enabled and CMS connected
         if settings.get("autoPublish", True):
@@ -153,6 +164,18 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
                             "cmsUrl": res.get("cmsUrl"),
                             "updatedAt": utcnow_iso(),
                         }})
+                    try:
+                        from services.activity import log_activity
+                        await log_activity(
+                            user_id, "ARTICLE_PUBLISHED",
+                            metadata={"articleId": article_id,
+                                       "title": gen["title"],
+                                       "cmsUrl": res.get("cmsUrl"),
+                                       "siteId": site_id,
+                                       "link": res.get("cmsUrl") or
+                                       f"/dashboard/articles/{article_id}"})
+                    except Exception:
+                        pass
                     user = await db.users.find_one(
                         {"id": user_id}, {"_id": 0, "password": 0})
                     if user:
@@ -252,6 +275,18 @@ async def run_ai_visibility_scan(job_id: str, site_id: str, user_id: str):
         await _update_job(job_id, status="completed", progress=100,
                           result={"scanId": scan["id"],
                                   "overallScore": scan_data["overallScore"]})
+        try:
+            from services.activity import log_activity
+            await log_activity(
+                user_id, "AI_SCAN_RUN",
+                metadata={"scanId": scan["id"], "siteId": site_id,
+                           "overallScore": scan_data["overallScore"],
+                           "title": "AI Visibility scan complete",
+                           "message": (f"Overall score "
+                                       f"{scan_data['overallScore']}/100"),
+                           "link": "/dashboard/ai-visibility"})
+        except Exception:
+            pass
     except Exception as e:
         logger.exception("ai visibility scan failed")
         await _update_job(job_id, status="failed", error=str(e))

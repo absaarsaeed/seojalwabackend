@@ -25,18 +25,87 @@ class GscConnectReq(BaseModel):
 @router.get("/overview")
 async def overview(siteId: str, dateRange: Optional[str] = "30d",
                    user=Depends(get_current_user)):
+    """Per-site GSC overview. Always returns valid structure even if
+    GSC isn't connected — the frontend uses `gscConnected` to decide
+    whether to surface a 'Connect Google Search Console' CTA."""
     db = get_db()
+    # All articles for this site (used for both totals and topArticles)
     rows = await db.articles.find(
         {"siteId": siteId, "userId": user["id"],
-         "deleted": {"$ne": True}}, {"_id": 0}).to_list(1000)
-    total_clicks = sum(r.get("clicks", 0) for r in rows)
-    total_impr = sum(r.get("impressions", 0) for r in rows)
+         "deleted": {"$ne": True}},
+        {"_id": 0, "content": 0}).to_list(2000)
+
+    total_clicks = sum(r.get("clicks", 0) or 0 for r in rows)
+    total_impr = sum(r.get("impressions", 0) or 0 for r in rows)
     avg_ctr = (total_clicks / total_impr * 100) if total_impr else 0
-    avg_pos = (sum(r.get("avgPosition", 0) or 0 for r in rows)
-               / len(rows)) if rows else 0
-    return ok({"totalClicks": total_clicks, "totalImpressions": total_impr,
-               "avgCTR": round(avg_ctr, 2), "avgPosition": round(avg_pos, 2),
-               "dateRange": dateRange})
+    pos_vals = [r.get("avgPosition", 0) or 0 for r in rows
+                if r.get("avgPosition")]
+    avg_pos = (sum(pos_vals) / len(pos_vals)) if pos_vals else 0
+
+    # GSC connection state (encrypted token presence on the user)
+    user_doc = await db.users.find_one(
+        {"id": user["id"]}, {"_id": 0, "gscAccessToken": 1}) or {}
+    gsc_connected = bool(user_doc.get("gscAccessToken"))
+
+    # Trend — compare latest 2 GSC snapshots if we have them
+    snaps = await db.gsc_snapshots.find(
+        {"siteId": siteId}, {"_id": 0}).sort(
+        "syncedAt", -1).limit(2).to_list(2)
+    trend = {"impressionsChange": 0.0, "clicksChange": 0.0}
+    if len(snaps) >= 2 and snaps[1].get("rowCount"):
+        # Crude period-over-period using the snapshot rowCount as a
+        # proxy. When real per-period totals are stored, swap in here.
+        cur = snaps[0].get("rowCount", 0)
+        prev = snaps[1].get("rowCount", 1) or 1
+        delta = round(((cur - prev) / prev) * 100, 1)
+        trend = {"impressionsChange": delta, "clicksChange": delta}
+
+    top_articles = sorted(
+        [r for r in rows if (r.get("clicks") or 0) > 0
+         or (r.get("impressions") or 0) > 0],
+        key=lambda r: (r.get("clicks") or 0), reverse=True)[:10]
+    top_articles = [{
+        "id": r["id"], "title": r.get("title", ""),
+        "clicks": r.get("clicks", 0),
+        "impressions": r.get("impressions", 0),
+        "ctr": round((r.get("clicks", 0) / r.get("impressions", 1) * 100)
+                     if r.get("impressions") else 0, 2),
+        "avgPosition": r.get("avgPosition", 0),
+    } for r in top_articles]
+
+    # Top queries from GSC if we've cached them
+    top_q_docs = await db.gsc_queries.find(
+        {"siteId": siteId}, {"_id": 0}).sort(
+        "clicks", -1).limit(10).to_list(10) if "gsc_queries" in (
+        await db.list_collection_names()) else []
+    top_queries = [{
+        "query": q.get("query", ""), "clicks": q.get("clicks", 0),
+        "impressions": q.get("impressions", 0),
+        "ctr": q.get("ctr", 0), "position": q.get("position", 0),
+    } for q in top_q_docs]
+
+    payload = {
+        "gscConnected": gsc_connected,
+        "metrics": {
+            "totalClicks": total_clicks,
+            "totalImpressions": total_impr,
+            "avgCtr": round(avg_ctr, 2),
+            "avgPosition": round(avg_pos, 2),
+        },
+        "trend": trend,
+        "topArticles": top_articles,
+        "topQueries": top_queries,
+        "dateRange": dateRange,
+        # Legacy flat keys (kept for older UI consumers)
+        "totalClicks": total_clicks,
+        "totalImpressions": total_impr,
+        "avgCTR": round(avg_ctr, 2),
+        "avgPosition": round(avg_pos, 2),
+    }
+    if not gsc_connected:
+        payload["message"] = ("Connect Google Search Console to see "
+                              "real traffic data")
+    return ok(payload)
 
 
 @router.get("/articles")
