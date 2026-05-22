@@ -157,6 +157,22 @@ The original spec asked for Node + Express + PostgreSQL + Prisma. Per user choic
 ### Tests added
 - `/app/backend/tests/test_master_launch.py` — 8 unit tests (`pick_category`, `resolve_article_links`, `_best_internal_match`)
 - `/app/backend/tests/test_master_launch_e2e.py` — 15 end-to-end tests (added by testing agent)
+- `/app/backend/tests/test_iteration4_fixes.py` — 11 e2e tests covering the 11-point dummy-data audit (FIX 1/2/2b/3/4/5/6/7/8/10/11)
+
+## Real-data audit — 2026-05-22 (Iteration 4)
+
+**Status: COMPLETE. 29/29 smoke + 23/23 master-launch + 11/11 iteration-4 PASS.**
+
+Eleven endpoints/flows fixed so the frontend never sees dummy data:
+- **FIX 1 — `GET /api/admin/users/{userId}`**: response now includes populated `subscription.plan` (full plan dict, not just planId), `usage.{articlesThisMonth, socialPostsThisMonth, aiScansThisMonth, teamSeatsUsed}` and a new `stats.{totalArticles, totalClicks, totalScans, growthScore}` block.
+- **FIX 2 — `GET /api/dashboard/overview`**: reshaped with `growthScore.{score, change, breakdown.{aiVisibility, seoContent, socialConsistency, trafficTrend}}`, `nextScheduledArticle`, `topPerformingArticle`, top-level booleans `hasConnectedSite/hasGeneratedArticle/hasRunScan`, `trial.{isTrialing, daysRemaining, trialEndsAt}`, plus `metrics.{articlesPublished, avgPosition, aiVisibilityScore}`.
+- **FIX 2b — Empty state**: dashboard returns 200 (not 404) when user has no site yet — `site:null`, all metrics 0, single onboarding recommendation.
+- **FIX 3 — `GET /api/growth-score`**: always returns valid `{score, breakdown, history, trend, change, message}`. Zero values + onboarding message on first call.
+- **FIX 5 — `GET /api/analytics/overview`**: reshaped with `gscConnected`, `metrics`, `trend`, `topArticles[10]`, `topQueries[10]`. Returns `message: "Connect Google Search Console..."` when `gscConnected:false`.
+- **FIX 6 — GSC OAuth**: `/api/analytics/gsc/connect` now correctly returns `400 GSC_NOT_CONFIGURED` instead of `500 await-on-None`.
+- **FIX 8 — Activity logging**: `SITE_ADDED` (sites POST), `ARTICLE_GENERATED`, `ARTICLE_PUBLISHED` (jobs.run_article_generation), `AI_SCAN_RUN` (jobs.run_ai_visibility_scan) now persist to `user_activity_log` with `{title, link}` metadata for the activity feed.
+- **FIX 10 — Admin subscription update**: `PUT /api/admin/users/{userId}/subscription` now (a) returns populated `subscription.plan`, (b) creates an in-app `SUBSCRIPTION_RENEWED` notification, (c) writes a `SUBSCRIPTION_UPGRADED` entry to user_activity_log, in addition to the pre-existing email + audit log + plan-articles trigger.
+- **FIX 4 / 7 / 11**: already correct in previous iteration — verified by tests (latest scan returns null cleanly, calendar groups by date, cascade delete returns counts and removes user).
 
 ### Known minor issues (carried from Phase 0)
 1. In-memory rate-limit/admin-lockout key on `request.client.host` (ingress IP). Move to Redis + honour `X-Forwarded-For` for multi-pod scaling.
