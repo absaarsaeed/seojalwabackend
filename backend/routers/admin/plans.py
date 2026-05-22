@@ -99,9 +99,25 @@ async def update_plan(plan_id: str, body: PlanBody):
         upd["cmsConnections"] = upd["websiteConnections"]
     elif "cmsConnections" in upd and "websiteConnections" not in upd:
         upd["websiteConnections"] = upd["cmsConnections"]
-    upd = _sync_features_flat(upd)
+
+    # Phase 2 bug fix — when only a subset of `features` is provided,
+    # merge it into the existing map instead of $set-ing the whole dict
+    # (which destructively replaces every other feature).
+    features_patch = upd.pop("features", None)
+    upd = _sync_features_flat({**upd, **({"features": features_patch}
+                                           if features_patch else {})})
+    # _sync_features_flat may have re-added features into upd — drop it
+    # so we can apply dot-notation updates instead.
+    upd.pop("features", None)
     upd["updatedAt"] = utcnow_iso()
-    res = await get_db().plans.update_one({"id": plan_id}, {"$set": upd})
+
+    set_payload: dict = {**upd}
+    if features_patch:
+        for k, v in features_patch.items():
+            set_payload[f"features.{k}"] = v
+
+    res = await get_db().plans.update_one(
+        {"id": plan_id}, {"$set": set_payload})
     if res.matched_count == 0:
         raise APIError("Plan not found", "NOT_FOUND", 404)
     fresh = await get_db().plans.find_one({"id": plan_id}, {"_id": 0})

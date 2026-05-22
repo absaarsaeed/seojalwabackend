@@ -178,6 +178,25 @@ Ten endpoint fixes shipped in one pass:
 ### Tests added
 - `/app/backend/tests/test_iteration5_fixes.py` — 13 e2e tests (incl. 2 slow tests for the GPT-4o scan + 2-image article gen)
 
+## Phase 2 — Free plan + dummy checkout + cross-site quota (Iteration 6) — 2026-05-22
+
+**Status: COMPLETE. 29/29 smoke + 9/9 iteration6 + 8/8 master_launch unit PASS.**
+
+Ten parts shipped + two critical bugs surfaced & fixed in the same iteration:
+- **Part 1 — Free plan seeded**: 4 plans now in `seed.py` (Free, Starter, Growth, Agency) with `slug`, `isFree`, `order`, nested `features` map (each feature has `{enabled, value}`). Existing plans backfilled on every startup (no destructive overwrite).
+- **Part 2 — Plan feature control**: `routers/admin/plans.py` accepts nested `features` and mirrors to flat top-level fields via `_sync_features_flat()`. **Bug fix:** `PUT /api/admin/plans/{id}` now uses dot-notation `$set` per feature key so a partial features payload doesn't wipe other features.
+- **Part 3 — Cross-site article quota**: `core/plan_limits.check_article_limit` counts across ALL user's sites for the month. New `GET /api/user/quota` returns per-site breakdown with auto-equal distribution default. New `PUT /api/user/quota/sites/{id}` validates `sum(quotas) ≤ planTotal`.
+- **Part 4 — Free plan on registration**: `routers/auth.py::register` now auto-assigns the Free plan as `ACTIVE` (no trial end date). Falls back to TRIALING the cheapest plan only if no Free plan exists.
+- **Part 5 — Plan selection page**: `GET /api/plans/selection` formats plans with `displayValue` per feature ("60 articles/month", "3 websites", "20 AI scans/month"), `cta` text, `highlighted` flag (true for Growth).
+- **Part 6 — Dummy checkout**: `POST /api/billing/checkout` creates a session with original/discounted/final prices. `POST /api/billing/checkout/{id}/complete` accepts any card, upgrades the subscription, creates a PAID invoice, records audit + notification + email + `setup_plan_articles` trigger. Idempotent (second `/complete` returns 409 SESSION_CONSUMED).
+- **Part 7 — Real coupons**: `POST /api/billing/validate-coupon` with `{code, planId, billingInterval}` returns `{valid, code, discount.{type,value,amount}, originalPrice, finalPrice}`. Coupons applied during `/checkout` and `usedCount` incremented on `/complete`. **Bug fix:** coupon type vocabulary canonicalised — both `PERCENT` and `PERCENTAGE` accepted on input, both stored as `PERCENT`. Migration `_migrate_coupon_type` heals legacy rows on startup.
+- **Part 8 — Site auto-analysis on first connect**: already implemented in previous iteration (`services/site_analyzer.py` + plugin verify hook).
+- **Part 9 — Admin upgrade triggers articles**: `PUT /api/admin/users/{id}/subscription` now triggers `setup_plan_articles` on any planId change (not just TRIALING→ACTIVE), skipped when target plan is Free.
+- **Self-healing migrations**: `seed.py` now backfills missing inner `features` keys on existing plan docs and canonicalises coupon types — protects against any future schema drift.
+
+### Tests added
+- `/app/backend/tests/test_iteration6_phase2.py` — 9 e2e tests covering PART 1-9 (9/9 passing post-fix)
+
 **Status: COMPLETE. 29/29 smoke + 23/23 master-launch + 11/11 iteration-4 PASS.**
 
 ## Real-data audit — 2026-05-22 (Iteration 4)

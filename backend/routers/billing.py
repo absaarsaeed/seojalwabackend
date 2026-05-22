@@ -77,7 +77,7 @@ def _apply_coupon(price: int, coupon: dict) -> tuple[int, int]:
     """Returns (discount_amount, final_price)."""
     ctype = (coupon.get("type") or "").upper()
     val = float(coupon.get("value", 0) or 0)
-    if ctype == "PERCENT":
+    if ctype in ("PERCENT", "PERCENTAGE"):
         discount = int(round(price * val / 100))
     elif ctype == "FIXED":
         discount = int(val)

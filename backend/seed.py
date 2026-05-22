@@ -123,6 +123,37 @@ async def _migrate_plan_field_rename(db):
                        "updatedAt": utcnow_iso()}})
 
 
+async def _migrate_coupon_type(db):
+    """Phase 2 — canonicalise `PERCENTAGE` → `PERCENT` on coupon docs."""
+    await db.coupons.update_many(
+        {"type": "PERCENTAGE"},
+        {"$set": {"type": "PERCENT", "updatedAt": utcnow_iso()}})
+
+
+async def _backfill_plan_inner_features(db, default_plans):
+    """Phase 2 — restore missing INNER feature keys on existing plan docs.
+
+    The destructive admin-PUT bug (now fixed via dot-notation $set) could
+    have wiped sub-keys; this self-healing pass adds back any feature key
+    that was deleted, using the default seed value.
+    """
+    by_name = {p["name"]: p for p in default_plans}
+    async for existing in db.plans.find({}, {"_id": 0}):
+        target = by_name.get(existing.get("name"))
+        if not target:
+            continue
+        target_feats = target.get("features") or {}
+        cur_feats = existing.get("features") or {}
+        patch = {}
+        for k, v in target_feats.items():
+            if k not in cur_feats:
+                patch[f"features.{k}"] = v
+        if patch:
+            patch["updatedAt"] = utcnow_iso()
+            await db.plans.update_one({"id": existing["id"]},
+                                       {"$set": patch})
+
+
 async def run_seed():
     db = get_db()
 
@@ -148,6 +179,11 @@ async def run_seed():
 
     # Migration: rename cmsConnections → websiteConnections on legacy plans
     await _migrate_plan_field_rename(db)
+
+    # Phase 2 — heal any plan rows that lost inner feature keys, and
+    # canonicalise coupon type vocabulary
+    await _backfill_plan_inner_features(db, DEFAULT_PLANS)
+    await _migrate_coupon_type(db)
 
     # Admin credentials
     existing_admin = await db.admin_credentials.find_one(

@@ -37,11 +37,16 @@ async def list_coupons():
 
 @router.post("")
 async def create_coupon(body: CouponReq):
-    if body.type.upper() not in {"PERCENTAGE", "FIXED"}:
-        raise APIError("Invalid type", "INVALID", 400)
+    type_norm = body.type.upper()
+    # Accept legacy 'PERCENTAGE' synonym but always store canonical 'PERCENT'
+    if type_norm == "PERCENTAGE":
+        type_norm = "PERCENT"
+    if type_norm not in {"PERCENT", "FIXED"}:
+        raise APIError("Invalid type — must be PERCENT or FIXED",
+                       "INVALID", 400)
     doc = {
         "id": str(uuid.uuid4()), "code": body.code.upper(),
-        "type": body.type.upper(), "value": body.value,
+        "type": type_norm, "value": body.value,
         "duration": (body.duration or "ONCE").upper(),
         "maxUses": body.maxUses, "usedCount": 0,
         "expiresAt": body.expiresAt, "isActive": True,
