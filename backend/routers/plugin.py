@@ -1,5 +1,6 @@
 """WordPress plugin API — called by the plugin, authenticated by X-Jalwa-API-Key header."""
 import logging
+import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Header, Request
@@ -107,11 +108,76 @@ async def verify(
     if site_name and not site.get("name"):
         updates["name"] = site_name
 
-    await get_db().sites.update_one({"id": site["id"]}, {"$set": updates})
+    # First-connect flag — only fire side effects (notification, email,
+    # activity log) the very first time this site successfully connects.
+    is_first_connect = not site.get("connectedAt")
+    if is_first_connect:
+        updates["connectedAt"] = utcnow_iso()
 
-    logger.info("plugin verify OK site=%s userId=%s wp=%s php=%s",
-                site.get("name"), site.get("userId"),
-                wp_version, php_version)
+    upd_res = await get_db().sites.update_one(
+        {"id": site["id"]}, {"$set": updates})
+
+    logger.info(
+        "plugin verify OK site=%s userId=%s wp=%s php=%s "
+        "first_connect=%s modified=%s",
+        site.get("name"), site.get("userId"),
+        wp_version, php_version, is_first_connect,
+        upd_res.modified_count)
+
+    # ── First-connect side effects ──────────────────────────────────────
+    if is_first_connect:
+        # Activity log
+        try:
+            from services.activity import log_activity
+            await log_activity(
+                site["userId"], "SITE_CONNECTED",
+                metadata={"siteId": site["id"],
+                           "siteName": site.get("name") or "",
+                           "title": "WordPress connected",
+                           "message": (f"{site.get('name')} is now "
+                                       "publishing automatically."),
+                           "link": "/dashboard/connections",
+                           "wpVersion": wp_version,
+                           "pluginVersion": plugin_version},
+                request=request)
+        except Exception as e:
+            logger.warning("activity log on first connect failed: %s", e)
+
+        # In-app notification
+        try:
+            from services.notifications import create_notification
+            await create_notification(
+                site["userId"], "SITE_CONNECTED",
+                "WordPress connected!",
+                (f"{site.get('name')} is now connected. Articles will "
+                 "publish automatically."),
+                icon="check-circle", link="/dashboard/connections")
+        except Exception as e:
+            logger.warning("notification on first connect failed: %s", e)
+
+        # Email — fire-and-forget so plugin gets a fast 200
+        try:
+            user_doc = await get_db().users.find_one(
+                {"id": site["userId"]},
+                {"_id": 0, "email": 1, "fullName": 1})
+            if user_doc and user_doc.get("email"):
+                from services import email_templates as _et
+                from services import email as _email
+                rendered = await _et.render_template(
+                    "site_connected",
+                    {"userName": user_doc.get("fullName") or "there",
+                     "siteName": site.get("name") or supplied_url,
+                     "siteUrl": site.get("url") or supplied_url,
+                     "dashboardUrl": (f"{os.environ.get('FRONTEND_URL', '')}"
+                                       "/dashboard/connections")})
+                if rendered:
+                    import asyncio
+                    asyncio.create_task(_email.send_email(
+                        user_doc["email"], rendered["subject"],
+                        rendered["html"], template="site_connected",
+                        user_id=site["userId"]))
+        except Exception as e:
+            logger.warning("site_connected email failed: %s", e)
 
     # Kick off auto-analysis if not yet done (best-effort, non-blocking semantics)
     try:

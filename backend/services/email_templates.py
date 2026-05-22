@@ -159,6 +159,20 @@ SEED_TEMPLATES: list[dict] = [
          "in <strong>{{daysLeft}}</strong> days. Upgrade to keep your "
          "content engine running.</p>"
          "<p><a href='{{upgradeUrl}}'>Choose a plan →</a></p>")},
+    {"key": "site_connected", "name": "Site Connected",
+     "category": "INTEGRATION",
+     "subject": "🎉 {{siteName}} is now connected!",
+     "variables": ["userName", "siteName", "siteUrl", "dashboardUrl"],
+     "description": "Sent when WordPress plugin connects successfully.",
+     "htmlBody": _wrap(
+         "<h1 style='margin:0 0 12px'>Great news, {{userName}}!</h1>"
+         "<p>Your website <strong>{{siteName}}</strong> is now connected "
+         "to SEO Jalwa. We'll start publishing articles automatically "
+         "based on your settings.</p>"
+         "<p><a href='{{dashboardUrl}}' style='background:#16a34a;"
+         "color:#fff;padding:12px 20px;border-radius:8px;"
+         "text-decoration:none;display:inline-block'>"
+         "View dashboard →</a></p>")},
     {"key": "announcement", "name": "Admin Announcement",
      "category": "MARKETING",
      "subject": "{{subject}}",
