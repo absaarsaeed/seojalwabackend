@@ -197,6 +197,7 @@ async def overview(siteId: Optional[str] = None,
             "hasConnectedSite": False,
             "hasGeneratedArticle": False,
             "hasRunScan": False,
+            "hasArticleSettings": False,
         })
 
     month_start = _month_start_iso()
@@ -322,6 +323,10 @@ async def overview(siteId: Optional[str] = None,
         "userId": user["id"], "siteId": site["id"],
         "deleted": {"$ne": True}})) > 0
     has_run_scan = latest_scan is not None
+    # `hasArticleSettings` is true when a non-default article_settings row
+    # exists (analyser writes one, user can also configure manually).
+    has_article_settings = (await db.article_settings.count_documents({
+        "siteId": site["id"]})) > 0
 
     return ok({
         "site": {
@@ -353,4 +358,5 @@ async def overview(siteId: Optional[str] = None,
         "hasConnectedSite": True,
         "hasGeneratedArticle": has_generated,
         "hasRunScan": has_run_scan,
+        "hasArticleSettings": has_article_settings,
     })

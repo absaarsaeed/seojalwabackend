@@ -31,15 +31,16 @@ class FeedbackReq(BaseModel):
 @public_router.post("/feedback")
 async def submit_feedback(body: FeedbackReq, request: Request,
                           user=Depends(get_optional_user)):
-    user_email = (user or {}).get("email") if user else body.email
-    if not user_email:
-        raise APIError("Email is required when not signed in",
-                       "MISSING_EMAIL", 400)
+    """Accepts authenticated + anonymous feedback. `email` is optional when
+    anonymous — the submission is still recorded; the admin reply flow just
+    won't be possible without an address."""
+    user_email = ((user or {}).get("email")
+                  if user else (body.email or ""))
     doc = {
         "id": str(uuid.uuid4()),
         "type": "FEEDBACK",
         "name": (user or {}).get("fullName") or body.name or "",
-        "email": user_email,
+        "email": user_email or "",
         "subject": f"Feedback: {body.category or 'general'}",
         "message": body.message,
         "category": body.category or "general",
@@ -58,7 +59,8 @@ async def submit_feedback(body: FeedbackReq, request: Request,
         await email_service.send_email(
             "hello@seojalwa.com",
             f"New feedback ({doc['category']})",
-            f"<p>From: {doc['name']} &lt;{doc['email']}&gt;</p>"
+            f"<p>From: {doc['name'] or 'Anonymous'} "
+            f"&lt;{doc['email'] or 'no email'}&gt;</p>"
             f"<p>Rating: {doc.get('rating','-')}</p>"
             f"<p>Page: {doc['pageUrl']}</p>"
             f"<hr><p>{body.message}</p>",
@@ -74,7 +76,9 @@ async def submit_feedback(body: FeedbackReq, request: Request,
                                request=request)
         except Exception:
             pass
-    return created({"id": doc["id"], "status": "NEW"}, "Feedback received")
+    return created({"id": doc["id"], "status": "NEW",
+                    "message": "Thank you for your feedback!"},
+                   "Feedback received")
 
 
 # ─────────────────────────────────────────────────── admin viewer
