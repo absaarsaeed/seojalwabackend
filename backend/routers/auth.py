@@ -119,28 +119,50 @@ async def register(body: RegisterReq):
         except APIError:
             pass  # Don't block signup if URL fails validation
 
-    # Auto-create a trial subscription using admin-configurable trial_days
+    # Auto-assign the Free plan on registration (Phase 2 Part 4).
+    # If no Free plan exists (legacy DB), fall back to the cheapest plan
+    # in TRIALING mode so the user is never left without a subscription.
     try:
-        starter = await db.plans.find_one(
-            {"isActive": {"$ne": False}}, {"_id": 0},
-            sort=[("monthlyPrice", 1)])
-        if starter:
-            trial_setting = await db.settings.find_one(
-                {"key": "trial_days"}, {"_id": 0})
-            trial_days = int((trial_setting or {}).get("value", 14) or 14)
-            now_dt = datetime.now(timezone.utc)
-            trial_end = (now_dt + timedelta(days=trial_days)).isoformat()
+        free_plan = await db.plans.find_one(
+            {"slug": "free", "isActive": True}, {"_id": 0})
+        if not free_plan:
+            free_plan = await db.plans.find_one(
+                {"isFree": True, "isActive": True}, {"_id": 0})
+        now_dt = datetime.now(timezone.utc)
+        if free_plan:
             await db.subscriptions.insert_one({
                 "id": str(uuid.uuid4()), "userId": user_id,
-                "planId": starter["id"], "status": "TRIALING",
+                "planId": free_plan["id"], "status": "ACTIVE",
                 "billingInterval": "MONTHLY",
                 "currentPeriodStart": now_dt.isoformat(),
-                "currentPeriodEnd": trial_end,
-                "trialEndsAt": trial_end,
+                "currentPeriodEnd": None,
+                "trialEndsAt": None,
                 "cancelAtPeriodEnd": False,
-                "source": "MANUAL",
+                "source": "FREE",
                 "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
             })
+        else:
+            # Legacy fallback — assign cheapest paid plan as TRIALING
+            starter = await db.plans.find_one(
+                {"isActive": {"$ne": False}}, {"_id": 0},
+                sort=[("monthlyPrice", 1)])
+            if starter:
+                trial_setting = await db.settings.find_one(
+                    {"key": "trial_days"}, {"_id": 0})
+                trial_days = int(
+                    (trial_setting or {}).get("value", 14) or 14)
+                trial_end = (now_dt + timedelta(days=trial_days)).isoformat()
+                await db.subscriptions.insert_one({
+                    "id": str(uuid.uuid4()), "userId": user_id,
+                    "planId": starter["id"], "status": "TRIALING",
+                    "billingInterval": "MONTHLY",
+                    "currentPeriodStart": now_dt.isoformat(),
+                    "currentPeriodEnd": trial_end,
+                    "trialEndsAt": trial_end,
+                    "cancelAtPeriodEnd": False,
+                    "source": "MANUAL",
+                    "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
+                })
     except Exception:
         pass  # Don't block signup if sub creation fails
 

@@ -201,3 +201,144 @@ async def delete_account(body: DeleteReq, user=Depends(get_current_user)):
         {"userId": user["id"], "status": "ACTIVE"},
         {"$set": {"status": "CANCELLED", "cancelAtPeriodEnd": True}})
     return ok({"deleted": True})
+
+
+# ============================= QUOTA =====================================
+# Phase 2 Part 3 — shared article quota with per-site allocation.
+
+class SiteQuotaReq(BaseModel):
+    quotaPerMonth: int
+
+
+def _month_start_iso() -> str:
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    return now.replace(day=1, hour=0, minute=0, second=0,
+                       microsecond=0).isoformat()
+
+
+async def _plan_total_articles(user_id: str) -> tuple[int, dict | None]:
+    db = get_db()
+    sub = await db.subscriptions.find_one(
+        {"userId": user_id, "status": {"$in": ["ACTIVE", "TRIALING"]}},
+        {"_id": 0}, sort=[("createdAt", -1)])
+    if not sub or not sub.get("planId"):
+        return 0, None
+    plan = await db.plans.find_one({"id": sub["planId"]}, {"_id": 0})
+    if not plan:
+        return 0, None
+    feats = (plan.get("features") or {}).get("articlesPerMonth") or {}
+    total = (int(feats.get("value", 0) or 0)
+             if feats else int(plan.get("articlesPerMonth", 0) or 0))
+    return total, plan
+
+
+@router.get("/quota")
+async def get_quota(user=Depends(get_current_user)):
+    db = get_db()
+    plan_total, plan = await _plan_total_articles(user["id"])
+    sites = await db.sites.find(
+        {"userId": user["id"], "deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "name": 1, "url": 1}).to_list(50)
+    site_ids = [s["id"] for s in sites]
+    month_start = _month_start_iso()
+
+    # Per-site usage
+    if site_ids:
+        agg = await db.articles.aggregate([
+            {"$match": {"userId": user["id"],
+                         "siteId": {"$in": site_ids},
+                         "deleted": {"$ne": True},
+                         "createdAt": {"$gte": month_start}}},
+            {"$group": {"_id": "$siteId", "n": {"$sum": 1}}},
+        ]).to_list(50)
+    else:
+        agg = []
+    used_by_site = {r["_id"]: r["n"] for r in agg}
+
+    # Per-site stored quota allocations (default: equal split, rounded up)
+    quotas = await db.site_article_quotas.find(
+        {"userId": user["id"]}, {"_id": 0}).to_list(50)
+    quota_map = {q["siteId"]: q for q in quotas}
+
+    auto_default = (plan_total // len(sites)) if sites and plan_total else 0
+    # Distribute remainder to the first sites
+    remainder = plan_total - auto_default * len(sites) if sites else 0
+
+    out_sites = []
+    used_total = 0
+    for i, s in enumerate(sites):
+        q = quota_map.get(s["id"])
+        allocated = (q.get("quotaPerMonth") if q
+                     else (auto_default + (1 if i < remainder else 0)))
+        used = used_by_site.get(s["id"], 0)
+        used_total += used
+        out_sites.append({
+            "siteId": s["id"], "siteName": s.get("name"),
+            "url": s.get("url"),
+            "quotaAllocated": allocated,
+            "usedThisMonth": used,
+            "remaining": max(0, allocated - used),
+            "autoDistribute": not q,
+        })
+
+    return ok({
+        "planTotal": plan_total,
+        "planName": (plan or {}).get("name"),
+        "usedThisMonth": used_total,
+        "remainingTotal": max(0, plan_total - used_total),
+        "sites": out_sites,
+    })
+
+
+@router.put("/quota/sites/{site_id}")
+async def set_site_quota(site_id: str, body: SiteQuotaReq,
+                          user=Depends(get_current_user)):
+    db = get_db()
+    site = await db.sites.find_one(
+        {"id": site_id, "userId": user["id"], "deleted": {"$ne": True}},
+        {"_id": 0})
+    if not site:
+        raise APIError("Site not found", "NOT_FOUND", 404)
+    if body.quotaPerMonth < 0:
+        raise APIError("Quota must be >= 0", "INVALID_QUOTA", 400)
+
+    plan_total, _ = await _plan_total_articles(user["id"])
+
+    # Sum of OTHER sites' quotas (defaulting to even split when unset)
+    sites = await db.sites.find(
+        {"userId": user["id"], "deleted": {"$ne": True}},
+        {"_id": 0, "id": 1}).to_list(50)
+    other_ids = [s["id"] for s in sites if s["id"] != site_id]
+    quotas = await db.site_article_quotas.find(
+        {"userId": user["id"], "siteId": {"$in": other_ids}},
+        {"_id": 0}).to_list(50)
+    quota_map = {q["siteId"]: q["quotaPerMonth"] for q in quotas}
+    auto_default = (plan_total // len(sites)) if sites and plan_total else 0
+    sum_others = sum(quota_map.get(sid, auto_default) for sid in other_ids)
+
+    if body.quotaPerMonth + sum_others > plan_total:
+        raise APIError(
+            (f"Quota total exceeds plan limit. Plan allows {plan_total}, "
+             f"other sites already use {sum_others}."),
+            "QUOTA_EXCEEDS_PLAN", 400,
+            meta={"planTotal": plan_total, "sumOthers": sum_others})
+
+    import uuid as _uuid
+    existing = await db.site_article_quotas.find_one(
+        {"userId": user["id"], "siteId": site_id}, {"_id": 0})
+    if existing:
+        await db.site_article_quotas.update_one(
+            {"id": existing["id"]},
+            {"$set": {"quotaPerMonth": body.quotaPerMonth,
+                       "autoDistribute": False,
+                       "updatedAt": utcnow_iso()}})
+    else:
+        await db.site_article_quotas.insert_one({
+            "id": str(_uuid.uuid4()),
+            "userId": user["id"], "siteId": site_id,
+            "quotaPerMonth": body.quotaPerMonth,
+            "autoDistribute": False,
+            "createdAt": utcnow_iso(), "updatedAt": utcnow_iso(),
+        })
+    return ok({"updated": True, "quotaPerMonth": body.quotaPerMonth})

@@ -15,34 +15,93 @@ from services.api_catalog import CATALOG  # noqa: E402
 
 DEFAULT_PLANS = [
     {
-        "name": "Starter", "monthlyPrice": 79, "annualPrice": 790,
+        "name": "Free", "slug": "free",
+        "monthlyPrice": 0, "annualPrice": 0,
+        "isFree": True, "order": 0, "sortOrder": 0,
+        "description": "Get started with 3 articles/month — free forever.",
+        "articlesPerMonth": 3, "socialPostsPerMonth": 0,
+        "aiScansPerMonth": 0, "teamSeats": 1,
+        "websiteConnections": 1, "cmsConnections": 1,
+        "brandVoiceModel": False, "competitorComparison": False,
+        "prioritySupport": False, "whiteLabel": False,
+        "gscConnection": True,
+        "isActive": True,
+        "features": {
+            "articlesPerMonth": {"enabled": True, "value": 3},
+            "websiteConnections": {"enabled": True, "value": 1},
+            "gscConnection": {"enabled": True, "value": True},
+            "aiScansPerMonth": {"enabled": False, "value": 0},
+            "socialPostsPerMonth": {"enabled": False, "value": 0},
+            "teamSeats": {"enabled": False, "value": 1},
+            "whiteLabel": {"enabled": True, "value": False},
+            "prioritySupport": {"enabled": False, "value": False},
+        },
+    },
+    {
+        "name": "Starter", "slug": "starter",
+        "monthlyPrice": 49, "annualPrice": 39,
+        "isFree": False, "order": 1, "sortOrder": 10,
         "description": "Perfect for small teams getting started.",
-        "articlesPerMonth": 20, "socialPostsPerMonth": 60,
-        "aiScansPerMonth": 4, "teamSeats": 2,
+        "articlesPerMonth": 20, "socialPostsPerMonth": 0,
+        "aiScansPerMonth": 5, "teamSeats": 1,
         "websiteConnections": 1, "cmsConnections": 1,
         "brandVoiceModel": True, "competitorComparison": False,
         "prioritySupport": False, "whiteLabel": False,
-        "isActive": True, "sortOrder": 10,
+        "gscConnection": True, "isActive": True,
+        "features": {
+            "articlesPerMonth": {"enabled": True, "value": 20},
+            "websiteConnections": {"enabled": True, "value": 1},
+            "gscConnection": {"enabled": True, "value": True},
+            "aiScansPerMonth": {"enabled": True, "value": 5},
+            "socialPostsPerMonth": {"enabled": False, "value": 0},
+            "teamSeats": {"enabled": False, "value": 1},
+            "whiteLabel": {"enabled": True, "value": False},
+            "prioritySupport": {"enabled": False, "value": False},
+        },
     },
     {
-        "name": "Growth", "monthlyPrice": 199, "annualPrice": 1990,
+        "name": "Growth", "slug": "growth",
+        "monthlyPrice": 99, "annualPrice": 79,
+        "isFree": False, "order": 2, "sortOrder": 20,
         "description": "Best for growing brands.",
-        "articlesPerMonth": 60, "socialPostsPerMonth": 200,
-        "aiScansPerMonth": 12, "teamSeats": 5,
+        "articlesPerMonth": 60, "socialPostsPerMonth": 0,
+        "aiScansPerMonth": 20, "teamSeats": 3,
         "websiteConnections": 3, "cmsConnections": 3,
         "brandVoiceModel": True, "competitorComparison": True,
-        "prioritySupport": True, "whiteLabel": False,
-        "isActive": True, "sortOrder": 20,
+        "prioritySupport": True, "whiteLabel": True,
+        "gscConnection": True, "isActive": True,
+        "features": {
+            "articlesPerMonth": {"enabled": True, "value": 60},
+            "websiteConnections": {"enabled": True, "value": 3},
+            "gscConnection": {"enabled": True, "value": True},
+            "aiScansPerMonth": {"enabled": True, "value": 20},
+            "socialPostsPerMonth": {"enabled": False, "value": 0},
+            "teamSeats": {"enabled": True, "value": 3},
+            "whiteLabel": {"enabled": True, "value": True},
+            "prioritySupport": {"enabled": True, "value": True},
+        },
     },
     {
-        "name": "Agency", "monthlyPrice": 499, "annualPrice": 4990,
+        "name": "Agency", "slug": "agency",
+        "monthlyPrice": 199, "annualPrice": 159,
+        "isFree": False, "order": 3, "sortOrder": 30,
         "description": "Everything for agencies and large teams.",
-        "articlesPerMonth": 200, "socialPostsPerMonth": 1000,
-        "aiScansPerMonth": 60, "teamSeats": 20,
-        "websiteConnections": -1, "cmsConnections": -1,
+        "articlesPerMonth": 150, "socialPostsPerMonth": 0,
+        "aiScansPerMonth": 50, "teamSeats": 10,
+        "websiteConnections": 10, "cmsConnections": 10,
         "brandVoiceModel": True, "competitorComparison": True,
         "prioritySupport": True, "whiteLabel": True,
-        "isActive": True, "sortOrder": 30,
+        "gscConnection": True, "isActive": True,
+        "features": {
+            "articlesPerMonth": {"enabled": True, "value": 150},
+            "websiteConnections": {"enabled": True, "value": 10},
+            "gscConnection": {"enabled": True, "value": True},
+            "aiScansPerMonth": {"enabled": True, "value": 50},
+            "socialPostsPerMonth": {"enabled": False, "value": 0},
+            "teamSeats": {"enabled": True, "value": 10},
+            "whiteLabel": {"enabled": True, "value": True},
+            "prioritySupport": {"enabled": True, "value": True},
+        },
     },
 ]
 
@@ -67,13 +126,25 @@ async def _migrate_plan_field_rename(db):
 async def run_seed():
     db = get_db()
 
-    # Plans
+    # Plans — insert if missing, ALSO backfill new fields (slug, features,
+    # isFree, order) on existing plan docs from earlier seeds.
     for p in DEFAULT_PLANS:
         existing = await db.plans.find_one({"name": p["name"]}, {"_id": 0})
         if not existing:
             doc = {"id": str(uuid.uuid4()), **p,
                    "createdAt": utcnow_iso(), "updatedAt": utcnow_iso()}
             await db.plans.insert_one(dict(doc))
+        else:
+            # Backfill — only add the keys that don't exist yet
+            patch = {}
+            for k in ("slug", "isFree", "order", "features",
+                       "gscConnection"):
+                if k not in existing and k in p:
+                    patch[k] = p[k]
+            if patch:
+                patch["updatedAt"] = utcnow_iso()
+                await db.plans.update_one(
+                    {"id": existing["id"]}, {"$set": patch})
 
     # Migration: rename cmsConnections → websiteConnections on legacy plans
     await _migrate_plan_field_rename(db)

@@ -25,6 +25,78 @@ class DemoReq(BaseModel):
     url: str
 
 
+def _feature_display(key: str, value, plan_is_free: bool) -> dict:
+    """Format a single feature for the plan-selection page."""
+    labels = {
+        "articlesPerMonth": "Articles per month",
+        "websiteConnections": "Website connections",
+        "aiScansPerMonth": "AI Visibility scans per month",
+        "socialPostsPerMonth": "Social posts per month",
+        "teamSeats": "Team seats",
+        "whiteLabel": "White-label (no SEO Jalwa branding)",
+        "gscConnection": "Google Search Console integration",
+        "prioritySupport": "Priority support",
+    }
+    label = labels.get(key, key)
+    if isinstance(value, bool):
+        display = label
+    elif key == "articlesPerMonth":
+        display = f"{value} articles/month"
+    elif key == "websiteConnections":
+        display = f"{value} {'website' if value == 1 else 'websites'}"
+    elif key == "aiScansPerMonth":
+        display = f"{value} AI scans/month"
+    elif key == "socialPostsPerMonth":
+        display = f"{value} social posts/month"
+    elif key == "teamSeats":
+        display = f"{value} team seat{'s' if value != 1 else ''}"
+    else:
+        display = f"{value} {label}"
+    return {"key": key, "label": label, "value": value,
+             "displayValue": display}
+
+
+@router.get("/plans/selection")
+async def plans_selection():
+    """Plans formatted for the public plan-selection / pricing page.
+
+    Only enabled features per plan are returned, each with a
+    human-readable `displayValue`. Highlights the 'Growth' plan.
+    """
+    rows = await get_db().plans.find(
+        {"isActive": True}, {"_id": 0}).sort(
+        [("order", 1), ("sortOrder", 1)]).to_list(50)
+
+    plans_out = []
+    for p in rows:
+        feats = p.get("features") or {}
+        enabled = []
+        for k, meta in feats.items():
+            if isinstance(meta, dict) and meta.get("enabled"):
+                v = meta.get("value")
+                # Skip boolean-feature rows with value=False
+                if isinstance(v, bool) and not v:
+                    continue
+                enabled.append({
+                    **_feature_display(k, v, bool(p.get("isFree"))),
+                    "enabled": True,
+                })
+        plans_out.append({
+            "id": p["id"],
+            "slug": p.get("slug") or p.get("name", "").lower(),
+            "name": p.get("name"),
+            "description": p.get("description", ""),
+            "monthlyPrice": p.get("monthlyPrice", 0),
+            "annualPrice": p.get("annualPrice", 0),
+            "isFree": bool(p.get("isFree")),
+            "features": enabled,
+            "cta": ("Get started free" if p.get("isFree")
+                    else f"Upgrade to {p.get('name')}"),
+            "highlighted": p.get("name") == "Growth",
+        })
+    return ok({"plans": plans_out, "trialDays": 0})
+
+
 @router.get("/plans")
 async def public_plans():
     rows = await get_db().plans.find(

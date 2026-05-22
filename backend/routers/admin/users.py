@@ -505,20 +505,28 @@ async def update_subscription(user_id: str, body: SubscriptionUpdateReq,
     except Exception:
         pass
 
-    # If status flipped from TRIALING → ACTIVE on a real plan, pre-generate
-    # the first week of articles (Part 3).
+    # If status flipped from TRIALING → ACTIVE on a real plan, OR if the
+    # planId changed (e.g. Free → Paid via admin upgrade), pre-generate
+    # the first week of articles (Phase 2 Part 9).
     try:
         prev_status = (sub or {}).get("status")
-        if (status == "ACTIVE" and prev_status == "TRIALING"
-                and body.planId):
-            site = await db.sites.find_one(
-                {"userId": user_id, "deleted": {"$ne": True}},
-                {"_id": 0}, sort=[("createdAt", 1)])
-            if site:
-                from services.trial import setup_plan_articles
-                import asyncio
-                asyncio.create_task(setup_plan_articles(
-                    user_id, site["id"], body.planId))
+        prev_plan_id = (sub or {}).get("planId")
+        plan_changed = bool(body.planId and body.planId != prev_plan_id)
+        trial_to_active = (status == "ACTIVE" and prev_status == "TRIALING"
+                            and body.planId)
+        if (trial_to_active or plan_changed) and body.planId:
+            new_plan_doc = await db.plans.find_one(
+                {"id": body.planId}, {"_id": 0, "isFree": 1, "name": 1})
+            # Skip when upgrading TO the Free plan (no articles to gen)
+            if not (new_plan_doc and new_plan_doc.get("isFree")):
+                site = await db.sites.find_one(
+                    {"userId": user_id, "deleted": {"$ne": True}},
+                    {"_id": 0}, sort=[("createdAt", 1)])
+                if site:
+                    from services.trial import setup_plan_articles
+                    import asyncio
+                    asyncio.create_task(setup_plan_articles(
+                        user_id, site["id"], body.planId))
     except Exception:
         pass
 
