@@ -159,9 +159,28 @@ The original spec asked for Node + Express + PostgreSQL + Prisma. Per user choic
 - `/app/backend/tests/test_master_launch_e2e.py` — 15 end-to-end tests (added by testing agent)
 - `/app/backend/tests/test_iteration4_fixes.py` — 11 e2e tests covering the 11-point dummy-data audit (FIX 1/2/2b/3/4/5/6/7/8/10/11)
 
-## Real-data audit — 2026-05-22 (Iteration 4)
+## Phase 1 fix batch — 2026-05-22 (Iteration 5)
+
+**Status: COMPLETE. 13/13 iteration5 + 29/29 smoke + 23/23 master_launch + 10/11 iteration4 (1 known 429 flake) PASS.**
+
+Ten endpoint fixes shipped in one pass:
+- **FIX 1 — GSC OAuth**: `GET /api/analytics/gsc/connect` now loads `client_id` / `client_secret` from `config_service` first (admin-saved DB values), env vars second, and builds the full Google authorize URL inline. Returns `400 GSC_NOT_CONFIGURED` when nothing is set; returns a real `accounts.google.com/o/oauth2/v2/auth?…` URL once the admin configures the keys via `/api/admin/api-keys/google_oauth`.
+- **FIX 2 — verify-connection trusts DB**: `POST /api/sites/{id}/verify-connection` returns `connected:true` immediately when `site.wordpressConnected` is already true (set by the plugin's verify call), without making a redundant HTTP probe. Avoids false negatives on staging URLs / firewalls.
+- **FIX 3 — AI visibility simplified**: `services/ai_visibility.py::run_scan` rewritten to ChatGPT-only with 5 brand-mention queries. Returns `overallScore`, `visibilityStatus` (`VISIBLE` / `PARTIAL` / `NOT_VISIBLE`), `visibilityMessage`, `queriesRun`, `mentionsFound`, `results[5]`, `recommendations`. Legacy 5-model fields kept for back-compat.
+- **FIX 4 — Resend fallback**: `services/email.py::send_email` falls back to `onboarding@resend.dev` sender when no verified domain `from_email` is configured, with a warning log. `email_logs` already record full `errorMessage` from the Resend API.
+- **FIX 5 — Real admin activity**: `GET /api/admin/dashboard/activity` combines 5 real DB sources — recent signups, `admin_audit_log`, `subscriptions` status changes, published articles, and `user_activity_log` SITE_CONNECTED events. No dummy data.
+- **FIX 6 — Real admin users**: verified `GET /api/admin/users` returns DB users only; no fallback.
+- **FIX 7 — Rich audit diff**: `PUT /api/admin/users/{id}/subscription` audit log now includes `changes.plan.{from,to}` (human-readable plan names) in addition to `changes.planId.{from,to}`, and `metadata.userEmail`.
+- **FIX 8 — CMS→Website**: confirmed full coverage (all 3 plan endpoints expose both `cmsConnections` and `websiteConnections` with equal values; no "CMS Connections" labels in the codebase).
+- **FIX 9 — Two images per article**: new `llm.generate_inline_image()` produces a square DALL-E 3 inline image alongside the existing 16:9 hero. `llm.insert_inline_image()` deterministically embeds the inline `<figure><img/></figure>` after the 2nd `<h2>` (fallback: 1st `<h2>` then first `</p>`). Article documents now persist both `featuredImageUrl` and `inlineImageUrl`.
+- **FIX 10 — Persistent onboarding**: `routers/user.py` exposes `GET /api/user/onboarding` and `PUT /api/user/onboarding`. State is stored on `user.onboarding` and auto-flips steps to `true` as the underlying data appears (site connected, article settings exist, search terms added, scan run). `GET /api/auth/me` includes the merged `onboarding` object.
+
+### Tests added
+- `/app/backend/tests/test_iteration5_fixes.py` — 13 e2e tests (incl. 2 slow tests for the GPT-4o scan + 2-image article gen)
 
 **Status: COMPLETE. 29/29 smoke + 23/23 master-launch + 11/11 iteration-4 PASS.**
+
+## Real-data audit — 2026-05-22 (Iteration 4)
 
 Eleven endpoints/flows fixed so the frontend never sees dummy data:
 - **FIX 1 — `GET /api/admin/users/{userId}`**: response now includes populated `subscription.plan` (full plan dict, not just planId), `usage.{articlesThisMonth, socialPostsThisMonth, aiScansThisMonth, teamSeatsUsed}` and a new `stats.{totalArticles, totalClicks, totalScans, growthScore}` block.
