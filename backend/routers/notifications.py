@@ -20,6 +20,14 @@ async def list_notifications(page: int = 1, limit: int = 20,
     total = await db.notifications.count_documents(q)
     rows = await db.notifications.find(q, {"_id": 0}).sort(
         "createdAt", -1).skip((page - 1) * limit).limit(limit).to_list(limit)
+    # Phase 3 FIX 9 — backfill icon + color on rows persisted before
+    # iteration 8 so the frontend always renders a coloured badge.
+    from services.notifications import _TYPE_ICON, _TYPE_COLOR
+    for r in rows:
+        if not r.get("icon"):
+            r["icon"] = _TYPE_ICON.get(r.get("type", ""), "bell")
+        if not r.get("color"):
+            r["color"] = _TYPE_COLOR.get(r.get("type", ""), "gray")
     return ok(rows, pagination=paginate(rows, total, page, limit))
 
 

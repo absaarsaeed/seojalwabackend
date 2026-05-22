@@ -64,13 +64,28 @@ async def get_legal(key: str):
     page = await get_db().legal_pages.find_one({"key": key}, {"_id": 0})
     if not page:
         raise APIError("Page not yet seeded", "NOT_FOUND", 404)
+    page["slug"] = page.get("key")
     return ok(page)
 
 
 @admin_router.get("")
 async def list_legal():
     rows = await get_db().legal_pages.find({}, {"_id": 0}).to_list(20)
+    # Return both `key` and `slug` so frontend can use either name
+    for r in rows:
+        r["slug"] = r.get("key")
     return ok(rows)
+
+
+@admin_router.get("/{key}")
+async def get_legal_admin(key: str):
+    if key not in ALLOWED_KEYS:
+        raise APIError("Invalid page key", "INVALID_KEY", 400)
+    page = await get_db().legal_pages.find_one({"key": key}, {"_id": 0})
+    if not page:
+        raise APIError("Page not yet seeded", "NOT_FOUND", 404)
+    page["slug"] = page.get("key")
+    return ok(page)
 
 
 @admin_router.put("/{key}")
@@ -85,4 +100,16 @@ async def update_legal(key: str, body: LegalPageReq):
     if not res.acknowledged:
         raise APIError("Update failed", "UPDATE_FAILED", 500)
     page = await get_db().legal_pages.find_one({"key": key}, {"_id": 0})
+    page["slug"] = page.get("key")
+
+    # Audit log (Phase 3 FIX 1)
+    try:
+        from core.audit import log_action
+        await log_action(
+            "LEGAL_PAGE_UPDATED", target_type="LEGAL_PAGE",
+            target_id=key,
+            changes={"slug": key, "action": "content_updated",
+                      "title": upd.get("title")})
+    except Exception:
+        pass
     return ok({"updated": True, "page": page})

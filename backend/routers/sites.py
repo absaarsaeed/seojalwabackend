@@ -170,6 +170,17 @@ async def get_site(site_id: str, user=Depends(get_current_user)):
         {"_id": 0})
     if not site:
         raise APIError("Site not found", "NOT_FOUND", 404)
+    # Phase 3 FIX 10 — normalise analyser-state fields so the frontend
+    # state machine doesn't have to handle `None`.
+    site.setdefault("analyzed", False)
+    site.setdefault("analyzing", False)
+    site.setdefault("analyzedAt", None)
+    site.setdefault("detectedNiche", "")
+    site.setdefault("detectedAudience", "")
+    site.setdefault("wordpressConnected", False)
+    site.setdefault("pluginVersion", "")
+    site.setdefault("wordpressVersion", "")
+    site.setdefault("phpVersion", "")
     return ok(site)
 
 

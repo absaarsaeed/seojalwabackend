@@ -157,6 +157,14 @@ async def analyze_and_setup_site(site_id: str) -> dict:
     if not site:
         logger.warning("analyze_and_setup_site: site %s not found", site_id)
         return {}
+    if site.get("analyzed"):
+        logger.info("analyze_and_setup_site: site %s already analyzed", site_id)
+        return site.get("analysis") or {}
+
+    # Mark as in-progress so the dashboard can show a spinner
+    await db.sites.update_one(
+        {"id": site_id}, {"$set": {"analyzing": True,
+                                     "updatedAt": utcnow_iso()}})
 
     site_url = (site.get("url") or "").rstrip("/")
     site_name = site.get("name") or site_url
@@ -239,14 +247,20 @@ async def analyze_and_setup_site(site_id: str) -> dict:
         inserted += 1
 
     # Mark site as analyzed + attach mapping
+    niche = result.get("niche") or ""
+    audience = result.get("targetAudience") or ""
     await db.sites.update_one(
         {"id": site_id},
         {"$set": {
             "categoryMapping": resolved_mapping,
-            "analysis": {"niche": result.get("niche"),
-                          "targetAudience": result.get("targetAudience"),
-                          "tone": result.get("contentStyle", {}).get("tone")},
+            "analysis": {"niche": niche,
+                          "targetAudience": audience,
+                          "tone": result.get("contentStyle",
+                                              {}).get("tone")},
+            "detectedNiche": niche,
+            "detectedAudience": audience,
             "analyzed": True,
+            "analyzing": False,
             "analyzedAt": utcnow_iso(),
             "updatedAt": utcnow_iso(),
         }})
