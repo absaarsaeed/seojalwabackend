@@ -197,6 +197,27 @@ Ten parts shipped + two critical bugs surfaced & fixed in the same iteration:
 ### Tests added
 - `/app/backend/tests/test_iteration6_phase2.py` — 9 e2e tests covering PART 1-9 (9/9 passing post-fix)
 
+## Phase 3 — UX data, blog editor, maintenance mode, legal pages (Iteration 7) — 2026-05-22
+
+**Status: COMPLETE. 29/29 smoke + 14/14 iteration7 + 9/9 iteration6 = 52/52 PASS.**
+
+Twelve parts shipped:
+- **Part 1 — Dashboard stats bar**: `data.stats.{totalWordsWritten, costSavings, timeSaved, articlesPublished}` on `/api/dashboard/overview` for both active-site and empty-state branches.
+- **Part 2 — Plugin update banner + dismiss**: `data.pluginUpdate.{available, currentVersion, latestVersion, dismissed}` on overview. New `PUT /api/user/dismiss-plugin-banner` stores `user.dismissedPluginVersion`.
+- **Part 3 — Enriched article calendar**: each entry has `{id, title, searchTerm, status, seoScore, wordCount, publishedAt, scheduledAt, featuredImageUrl, cmsUrl, excerpt}` (excerpt HTML-stripped, 120 char window). Buckets by `publishedAt` when present, else `scheduledAt`.
+- **Part 4 — Blog rich editor backend**: full CRUD with slug uniqueness (-2, -3 suffixes), readTime calc (200 wpm, HTML stripped), default author "SEO Jalwa Team", legacy `metaTitle`/`metaDescription` mirrors, status→publishedAt stamping. `POST /api/admin/blog/upload-image` accepts multipart up to 10 MB, uploads to R2 under `blog/{folder}/images/<8-hex>-<safe>`.
+- **Part 5 — Maintenance mode middleware**: `server.py` middleware reads both `settings.id='general'` AND `settings.key='maintenance_mode'` shapes; public routes return 503 `MAINTENANCE_MODE` with admin message; `/api/admin`, `/api/auth/login`, `/api/auth/admin`, `/api/health`, `/api/legal`, `/api/docs`, `/api/openapi.json`, `/api/redoc` stay open so admin can disable.
+- **Part 6 — Legal pages**: new `routers/legal.py` with 3 seeded pages (privacy-policy, terms-of-service, cookie-policy). Public `GET /api/legal/{key}`. Admin `GET /api/admin/legal` + `PUT /api/admin/legal/{key}` with `lastUpdatedAt` stamping.
+- **Part 7 — Announcements real recipient counts**: `GET /api/admin/announcements/preview-count?targetAudience=` returns real DB count; POST accepts `channels:[EMAIL,IN_APP]` array OR legacy `channel:BOTH`; `_audience_user_ids` helper resolves ALL/FREE/STARTER/GROWTH/AGENCY from subscriptions+plans.
+- **Part 8 — Admin analytics overview**: new `GET /api/admin/analytics/overview` returns `{users.{total, byPlan{free,starter,growth,agency}, newToday/Week/Month, dailySignups[30]}, revenue.{mrr,arr,thisMonth,lastMonth,dailyRevenue[30]}, content.{articlesGenerated,articlesThisMonth,aiScansRun,totalWordsWritten}, funnel.{registered,connectedSite,generatedArticle,ranScan,upgradedToPaid}}`. All numbers from real Mongo aggregations.
+- **Part 9 — Email log full body**: `services/email._write_log` now persists `htmlBody` + `textBody` on every code path. `GET /api/admin/emails/{id}` includes them so the admin UI can render in an iframe.
+- **Part 10 — Audit log details**: previously shipped in iteration 5 — sanity-checked.
+- **Part 11 — wordCount HTML-strip**: `services/llm.py` now strips HTML before counting words. `services/wordpress.py` already persists `cmsUrl` on successful publish.
+- **Part 12 — Growth score auto-recalc**: new `services/growth_score.py::calculate_growth_score()` invoked from `jobs.run_article_generation` (after publish) and `jobs.run_ai_visibility_scan` (after scan complete).
+
+### Tests added
+- `/app/backend/tests/test_iteration7_phase3.py` — 14 e2e tests (14/14 PASS)
+
 **Status: COMPLETE. 29/29 smoke + 23/23 master-launch + 11/11 iteration-4 PASS.**
 
 ## Real-data audit — 2026-05-22 (Iteration 4)
