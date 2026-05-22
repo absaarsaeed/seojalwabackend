@@ -254,58 +254,111 @@ async def _run_model_scan(name: str, real_fn, queries: list[str],
 
 # =========================================================== PUBLIC API
 async def run_scan(site: dict) -> dict:
-    """Run the full 5-model AI visibility scan. Returns the score record."""
+    """Simplified ChatGPT-only AI visibility scan.
+
+    Runs 5 brand-discovery queries through GPT-4o and computes a simple
+    visibility score based on how many responses mention the site by name
+    or domain. Generates 3-5 plain-English recommendations.
+    """
     site_url = site.get("url") or ""
     site_name = site.get("name") or site_url
 
-    queries = await _generate_queries(site_url, site_name)
-    # Split into 5 chunks of 5 (one per model)
-    chunks = [queries[i * 5:(i + 1) * 5] for i in range(5)]
-    while len(chunks) < 5:
-        chunks.append(queries[:5])
+    queries = [
+        f"What is {site_name}?",
+        f"Tell me about {site_name}",
+        f"Is {site_name} a good website?",
+        f"What does {site_name} offer?",
+        f"Reviews of {site_name}",
+    ]
 
-    chatgpt = await _run_model_scan("chatgpt", _query_chatgpt, chunks[0],
-                                    site_name, site_url)
-    perplexity = await _run_model_scan("perplexity", _query_perplexity,
-                                       chunks[1], site_name, site_url)
-    gemini = await _run_model_scan("gemini", _query_gemini, chunks[2],
-                                   site_name, site_url)
-    claude = await _run_model_scan("claude", _query_claude, chunks[3],
-                                   site_name, site_url)
-    # Copilot has no public API — always simulated via GPT-4o
-    copilot = await _run_model_scan("copilot", None, chunks[4],
-                                    site_name, site_url)
+    results: list[dict] = []
+    mention_count = 0
+    for q in queries:
+        try:
+            answer = await chat_completion(
+                "Answer concisely. Mention specific businesses by name.",
+                q, model="gpt-4o")
+        except Exception as e:
+            logger.warning("ChatGPT query failed: %s", e)
+            results.append({"query": q, "mentioned": False,
+                             "error": str(e)[:160], "response_snippet": ""})
+            continue
+        mentioned = _detect_mention(answer, site_name, site_url)
+        if mentioned:
+            mention_count += 1
+        results.append({
+            "query": q, "mentioned": mentioned,
+            "response_snippet": (answer or "")[:200],
+        })
 
-    # Weighted overall: 30/25/20/15/10
-    overall = int(round(
-        chatgpt["score"] * 0.30
-        + perplexity["score"] * 0.25
-        + gemini["score"] * 0.20
-        + claude["score"] * 0.15
-        + copilot["score"] * 0.10
-    ))
+    score = int((mention_count / len(queries)) * 100)
+    if score >= 60:
+        status = "VISIBLE"
+        message = f"{site_name} is visible on AI chat engines"
+    elif score >= 20:
+        status = "PARTIAL"
+        message = f"{site_name} is partially visible on AI chat engines"
+    else:
+        status = "NOT_VISIBLE"
+        message = f"{site_name} is not yet visible on AI chat engines"
 
-    results = {
-        "chatgpt": chatgpt, "perplexity": perplexity, "gemini": gemini,
-        "claude": claude, "copilot": copilot,
-    }
-    recs = await _recommendations(site_url, results)
+    # Recommendations — single GPT-4o call, JSON output
+    rec_sys = ("Reply ONLY with a JSON array. Each item has keys: title, "
+               "description, difficulty (easy|medium|hard), impact "
+               "(low|medium|high).")
+    rec_prompt = (
+        f"Website: {site_name} ({site_url})\n"
+        f"AI Visibility Score: {score}/100\n"
+        f"Status: {status}\n"
+        f"Queries run: {len(queries)}, mentions found: {mention_count}\n\n"
+        f"Give 3-5 specific recommendations to improve AI visibility.")
+    try:
+        raw = await chat_completion(rec_sys, rec_prompt, model="gpt-4o")
+        match = re.search(r"\[.*\]", raw, re.S)
+        recommendations = json.loads(match.group(0))[:5] if match else []
+    except Exception as e:
+        logger.warning("recommendations gen failed: %s", e)
+        recommendations = [
+            {"title": "Publish branded pillar content",
+             "description": ("Long-form articles about who you are and what "
+                              "you do help AIs learn your brand."),
+             "difficulty": "medium", "impact": "high"},
+            {"title": "Get listed in industry roundups",
+             "description": ("Earn citations from authoritative sources to "
+                              "boost AI training signal."),
+             "difficulty": "hard", "impact": "high"},
+            {"title": "Add FAQ schema to key pages",
+             "description": "Structured data helps AIs extract clean answers.",
+             "difficulty": "easy", "impact": "medium"},
+        ]
 
+    # Maintain the legacy 5-model shape for any UI that still reads it —
+    # all four extra models report score 0 / NOT_MENTIONED so the UI can
+    # collapse them gracefully. The simplified UI should read
+    # `overallScore`, `visibilityStatus`, `visibilityMessage`, `results`.
+    zero_model = {"score": 0, "sentiment": "NOT_MENTIONED", "mentions": 0,
+                  "simulated": False}
     return {
-        "overallScore": overall,
-        "chatgptScore": chatgpt["score"],
-        "perplexityScore": perplexity["score"],
-        "geminiScore": gemini["score"],
-        "claudeScore": claude["score"],
-        "copilotScore": copilot["score"],
-        "chatgptSentiment": chatgpt["sentiment"],
-        "perplexitySentiment": perplexity["sentiment"],
-        "geminiSentiment": gemini["sentiment"],
-        "claudeSentiment": claude["sentiment"],
-        "copilotSentiment": copilot["sentiment"],
-        "recommendations": recs,
-        "rawResults": results,
+        "overallScore": score,
+        "visibilityStatus": status,
+        "visibilityMessage": message,
+        "queriesRun": len(queries),
+        "mentionsFound": mention_count,
+        "results": results,
         "queries": queries,
+        "recommendations": recommendations,
+        # Legacy/back-compat fields
+        "chatgptScore": score,
+        "perplexityScore": 0, "geminiScore": 0, "claudeScore": 0,
+        "copilotScore": 0,
+        "chatgptSentiment": "POSITIVE" if score >= 60
+            else "NEUTRAL" if score >= 20 else "NOT_MENTIONED",
+        "perplexitySentiment": "NOT_MENTIONED",
+        "geminiSentiment": "NOT_MENTIONED",
+        "claudeSentiment": "NOT_MENTIONED",
+        "copilotSentiment": "NOT_MENTIONED",
+        "rawResults": {"chatgpt": {**zero_model, "score": score,
+                                     "mentions": mention_count}},
     }
 
 

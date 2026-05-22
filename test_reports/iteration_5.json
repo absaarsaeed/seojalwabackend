@@ -1,0 +1,48 @@
+{
+  "summary": "Validated all 10 Phase-1 fix-batch deliverables. NEW test_iteration5_fixes.py passes 13/13 (covers FIX 1-10, including the 2 slow tests for GPT-4o AI scan + 2-image article gen). Baseline regressions: smoke_phase1.sh 29/29 PASS; test_master_launch.py + test_master_launch_e2e.py + test_iteration4_fixes.py 33/34 PASS (the single failure is the well-known in-memory /api/auth/register rate-limit returning 429 — same flake carried over from iteration_2/3/4, NOT a regression introduced by this batch).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/admin/plans", "issue": "When a plan doc is missing BOTH cmsConnections and websiteConnections (e.g. leftover TEST_ docs from previous tests), the response router does not backfill either key — current code only mirrors when one of the two is present. Real prod plans (Starter/Growth/Agency) are fine. Suggested fix in routers/admin/plans.py:list_plans: after the existing mirror block, default both to 0 when neither key exists. Not in this iteration's scope; flagging for hygiene."},
+      {"endpoint": "POST /api/auth/register", "issue": "Still flaky 429 RATE_LIMITED when full test run exceeds ~30 registrations/hr from the same IP. Same in-memory limiter root cause flagged in iteration_2/3/4. test_iteration4_fixes::test_fix11_admin_user_cascade_delete failed for this reason in the combined run; passes when iteration4 is run on its own. Not a regression."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iteration5_fixes.py",
+    "/app/test_reports/pytest/iteration5_full.xml",
+    "/app/test_reports/pytest/iteration5_baseline.xml"
+  ],
+  "action_items": [
+    "(Optional / out-of-scope) GET /api/admin/plans should default cmsConnections+websiteConnections to 0 when both are absent on a plan doc, not only mirror when one is present. Doesn't affect prod plans but is a data-hygiene gap surfaced by leftover TEST_ plans.",
+    "(Carried over) Externalise the /api/auth/register rate-limit bucket so back-to-back full test sweeps don't 429."
+  ],
+  "critical_code_review_comments": [
+    "FIX 1 verified end-to-end: with no google_oauth creds, /api/analytics/gsc/connect returns 400 GSC_NOT_CONFIGURED. After PUT /api/admin/api-keys/google_oauth {client_id, client_secret, redirect_uri}, the next call returns 200 with data.authUrl pointing to accounts.google.com/o/oauth2/v2/auth and containing client_id, scope=webmasters, access_type=offline, prompt=consent. Test cleans up creds afterwards.",
+    "FIX 2 verified: site with wordpressConnected:true in DB returns connected:true in <0.1s without making any HTTP probe (validated against a .invalid host that would otherwise time out). With wordpressConnected:false, falls through to the WP probe and returns either 200 connected:false OR a 4xx with detail — both acceptable.",
+    "FIX 3 verified (slow): POST /api/ai-visibility/scan completes within ~5s (Emergent fallback key). GET /api/ai-visibility/latest returns overallScore int, visibilityStatus ∈ {VISIBLE, PARTIAL, NOT_VISIBLE}, visibilityMessage string, queriesRun=5, mentionsFound int, results[5] with {query, mentioned, response_snippet}, recommendations array. Legacy back-compat fields (chatgptScore, perplexityScore) still present.",
+    "FIX 4 verified: Setting resend.api_key to invalid value + empty from_email + clearing sendgrid produces an `email_logs` row with status=FAILED, provider=RESEND, and non-empty errorMessage explaining the Resend API error. The onboarding@resend.dev fallback path is exercised. Test restores original Resend + SendGrid configs in finally{}.",
+    "FIX 5 verified: GET /api/admin/dashboard/activity?limit=20 returns 20+ real events sorted desc by timestamp, with USER_REGISTERED, SUBSCRIPTION_*, USER_PLAN_CHANGED, ARTICLE_GENERATED, SITE_ADDED all observed. No dummy/placeholder data.",
+    "FIX 6 verified: GET /api/admin/users returns real users; pagination.total matches db.users count; all emails look real (no 'dummy'/'placeholder' substring).",
+    "FIX 7 verified: After PUT /api/admin/users/{id}/subscription with a planId switch, GET /api/admin/audit-log?action=USER_PLAN_CHANGED has a row where changes.planId.{from,to} AND changes.plan.{from,to} (human-readable name like 'Starter' → 'Growth') are populated, AND metadata.userEmail equals the affected user's email.",
+    "FIX 8 verified: GET /api/plans, /api/billing/plans, AND /api/admin/plans all return both cmsConnections and websiteConnections with equal values on every REAL plan (Starter/Growth/Agency). Stale TEST_-named docs may lack both keys — see minor issue above.",
+    "FIX 9 verified (slow): POST /api/articles/generate completes in <90s. Resulting article doc contains BOTH `featuredImageUrl` AND `inlineImageUrl` keys (values may be null if image gen fails gracefully). When inlineImageUrl is non-null, content HTML contains the inline <figure><img/></figure> block as required.",
+    "FIX 10 verified: GET /api/user/onboarding returns {onboarding: {websiteConnected, articleSettingsConfigured, searchTermsAdded, firstScanRun, dismissed, completed}} all booleans. PUT updates {step:'articleSettingsConfigured', completed:true} → next GET shows step=true. PUT {dismissed:true} → dismissed=true. GET /api/auth/me data.onboarding mirrors the same object. `completed` is correctly computed as `all(real_steps)`."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration5_fixes.py (NEW — 13 pytest cases covering all 10 fixes; 2 marked slow for the scan+article gen flows)"
+  ],
+  "success_rate": {
+    "iteration5_new_tests": "13/13 (100%)",
+    "smoke_baseline": "29/29 (100%)",
+    "master_launch_baseline": "23/23 (100%)",
+    "iteration4_baseline": "10/11 (the 1 failure is the known /api/auth/register 429 rate-limit, not a regression)",
+    "combined_run": "33/34 sequential; all 34 pass when iteration4 is invoked separately"
+  },
+  "test_credentials": "Admin jalwa/jalwaadmin (X-Admin-Token). New users created per test as i5_<ts>_<uuid>@seojalwa.com / Testing12345!. Falls back to minting JWTs server-side via core.security.create_access_token(user_id) when register hits the rate limit.",
+  "seed_data_creation": "Each test registers a fresh user; FIX 2 also creates a fake-URL site and DB-patches wordpressConnected:true; FIX 4 temporarily overrides resend + sendgrid api-keys and restores them in finally. No persistent pollution beyond the leftover test user docs (already common to all iterations).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run sequence to validate iteration_5 deliverables: (1) `bash /app/backend/tests/smoke_phase1.sh` → 29/29. (2) `pytest /app/backend/tests/test_iteration5_fixes.py -v` → 13/13. (3) `pytest /app/backend/tests/test_master_launch.py /app/backend/tests/test_master_launch_e2e.py /app/backend/tests/test_iteration4_fixes.py -v` → 33/34 (the 1 fail is the known 429). Do NOT chain (3) immediately after (2) on the same IP without waiting ~30 min — they both register fresh users and will share the in-memory rate-limit bucket. The 2 slow tests in iteration5 (FIX 3 AI scan + FIX 9 article gen) each take ~30-60s; allow ~3 min for the full iteration5 suite. The auto-load of /app/backend/.env into os.environ at the top of test_iteration5_fixes.py is required for the DB-direct helpers (FIX 2 patches site.wordpressConnected via motor).",
+  "rca of the issue": "No new bugs found. The only outstanding hygiene item is /api/admin/plans not backfilling cmsConnections/websiteConnections to a default 0 when BOTH are absent — only matters for stale TEST_ docs and is out of scope for this iteration. The /api/auth/register 429 flake is environmental (in-memory IP-keyed limiter) and pre-dates this batch. All 10 spec items are implemented correctly and verified end-to-end against the live preview URL."
+}

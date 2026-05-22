@@ -421,5 +421,15 @@ async def me(user=Depends(get_current_user)):
         except APIError:
             sites = []
 
-    return ok({"user": user, "subscription": subscription, "sites": sites},
+    # Compute onboarding state on every /me — auto-flips steps to True
+    # as user completes them in the underlying data.
+    try:
+        from routers.user import _compute_onboarding
+        onboarding = await _compute_onboarding(user["id"])
+    except Exception:
+        onboarding = {}
+    user["onboarding"] = onboarding
+
+    return ok({"user": user, "subscription": subscription,
+               "sites": sites, "onboarding": onboarding},
               "Current user")

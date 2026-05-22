@@ -35,6 +35,97 @@ class DeleteReq(BaseModel):
     password: str
 
 
+# ============================ ONBOARDING =================================
+DEFAULT_ONBOARDING = {
+    "websiteConnected": False,
+    "articleSettingsConfigured": False,
+    "searchTermsAdded": False,
+    "firstScanRun": False,
+    "dismissed": False,
+}
+
+_ONB_STEPS = set(DEFAULT_ONBOARDING) - {"dismissed"}
+
+
+async def _compute_onboarding(user_id: str) -> dict:
+    """Read user.onboarding and merge with auto-detected steps from data.
+
+    Steps auto-flip to True as soon as the relevant DB rows exist:
+      - websiteConnected → any user site has wordpressConnected=true
+      - articleSettingsConfigured → any article_settings doc for user's sites
+      - searchTermsAdded → any search_terms doc for user's sites
+      - firstScanRun → any ai_visibility_scan for user
+
+    `dismissed` is set only by an explicit PUT, never inferred.
+    """
+    db = get_db()
+    user_doc = await db.users.find_one(
+        {"id": user_id}, {"_id": 0, "onboarding": 1}) or {}
+    stored = (user_doc.get("onboarding") or {}).copy()
+
+    sites = await db.sites.find(
+        {"userId": user_id, "deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "wordpressConnected": 1}).to_list(50)
+    site_ids = [s["id"] for s in sites]
+
+    auto = {
+        "websiteConnected": any(s.get("wordpressConnected") for s in sites),
+        "articleSettingsConfigured": (
+            await db.article_settings.count_documents(
+                {"siteId": {"$in": site_ids}})) > 0
+            if site_ids else False,
+        "searchTermsAdded": (await db.search_terms.count_documents(
+            {"siteId": {"$in": site_ids}})) > 0 if site_ids else False,
+        "firstScanRun": (await db.ai_visibility_scans.count_documents(
+            {"userId": user_id})) > 0,
+    }
+    merged = {**DEFAULT_ONBOARDING, **stored}
+    for k, v in auto.items():
+        if v:
+            merged[k] = True
+    # Persist auto-flips so we don't recompute every refresh
+    if merged != stored:
+        await db.users.update_one(
+            {"id": user_id}, {"$set": {"onboarding": merged,
+                                        "updatedAt": utcnow_iso()}})
+    merged["completed"] = all(merged.get(s) for s in _ONB_STEPS)
+    return merged
+
+
+class OnboardingReq(BaseModel):
+    step: Optional[str] = None
+    completed: Optional[bool] = None
+    dismissed: Optional[bool] = None
+
+
+@router.get("/onboarding")
+async def get_onboarding(user=Depends(get_current_user)):
+    return ok({"onboarding": await _compute_onboarding(user["id"])})
+
+
+@router.put("/onboarding")
+async def update_onboarding(body: OnboardingReq,
+                            user=Depends(get_current_user)):
+    db = get_db()
+    current = await _compute_onboarding(user["id"])
+    if body.dismissed is not None:
+        current["dismissed"] = bool(body.dismissed)
+    if body.step:
+        if body.step not in _ONB_STEPS:
+            raise APIError("Unknown onboarding step", "INVALID_STEP", 400)
+        current[body.step] = bool(body.completed
+                                   if body.completed is not None else True)
+    current.pop("completed", None)  # computed, never stored
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"onboarding": current,
+                  "updatedAt": utcnow_iso()}})
+    return ok({"onboarding": await _compute_onboarding(user["id"])})
+
+
+# ============================ PROFILE ====================================
+
+
 @router.put("/profile")
 async def update_profile(body: ProfileReq, user=Depends(get_current_user)):
     db = get_db()

@@ -202,25 +202,50 @@ async def delete_site(site_id: str, user=Depends(get_current_user)):
 
 @router.post("/{site_id}/verify-connection")
 async def verify_connection(site_id: str, user=Depends(get_current_user)):
+    """Trust-the-DB-first connection check.
+
+    If `site.wordpressConnected` is already true (set by the plugin's
+    `POST /api/plugin/verify` call), we return connected=true immediately
+    without probing the WP REST endpoint. This avoids the false-negative
+    case where the plugin successfully connected but the public WP REST
+    endpoint isn't reachable (firewall, staging URL, etc.).
+
+    Otherwise we probe the optional `/wp-json/seojalwa/v1/status` route
+    which the plugin exposes — but we also fall back to the stored
+    boolean on any probe error.
+    """
     db = get_db()
     site = await db.sites.find_one({"id": site_id, "userId": user["id"]},
                                    {"_id": 0})
     if not site:
         raise APIError("Site not found", "NOT_FOUND", 404)
 
-    # Probe the WP plugin status endpoint
+    # ── Trust DB first ──────────────────────────────────────────────────
+    if site.get("wordpressConnected"):
+        return ok({
+            "connected": True,
+            "message": "WordPress is connected and active",
+            "lastSync": site.get("lastSync"),
+            "wordpressVersion": site.get("wordpressVersion"),
+            "pluginVersion": site.get("pluginVersion"),
+        })
+
+    # ── Otherwise, probe the WP plugin status endpoint ─────────────────
     import httpx
     probe_url = f"{site['url'].rstrip('/')}/wp-json/seojalwa/v1/status"
     connected = False
     detail = ""
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
-            resp = await c.get(probe_url)
+            resp = await c.get(
+                probe_url, headers={"User-Agent": "SEO Jalwa/1.0"})
             if resp.status_code == 200:
                 data = resp.json() if resp.headers.get(
                     "content-type", "").startswith("application/json") else {}
                 connected = bool(data.get("connected"))
                 detail = data.get("message", "")
+            else:
+                detail = f"Plugin not responding (HTTP {resp.status_code})"
     except Exception as e:
         detail = str(e)[:120]
 
@@ -228,9 +253,9 @@ async def verify_connection(site_id: str, user=Depends(get_current_user)):
         await db.sites.update_one(
             {"id": site_id},
             {"$set": {"wordpressConnected": True,
+                      "connectedAt": site.get("connectedAt") or utcnow_iso(),
                       "lastSync": utcnow_iso(),
                       "updatedAt": utcnow_iso()}})
-        # Kick off auto-analysis (idempotent — service checks analyzed flag)
         try:
             from services.site_analyzer import analyze_and_setup_site
             import asyncio
@@ -241,9 +266,10 @@ async def verify_connection(site_id: str, user=Depends(get_current_user)):
         return ok({"connected": True,
                    "message": "WordPress connected",
                    "lastSync": utcnow_iso()})
+
     return ok({"connected": False,
-               "message": ("Plugin not detected. Make sure plugin is "
-                           "installed and API key is entered."),
+               "message": ("Plugin not detected. Make sure the plugin is "
+                           "installed and the API key is entered."),
                "detail": detail})
 
 

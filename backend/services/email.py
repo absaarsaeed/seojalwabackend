@@ -144,8 +144,16 @@ async def send_email(
     re_fields = await config_service.get_fields("resend")
     re_key = re_fields.get("api_key") or os.environ.get("RESEND_API_KEY")
     if re_key:
+        # Resend requires a verified domain — fall back to their public
+        # `onboarding@resend.dev` sender if the admin hasn't configured one.
         re_from = (re_fields.get("from_email")
-                   or os.environ.get("RESEND_FROM_EMAIL", FROM_EMAIL))
+                   or os.environ.get("RESEND_FROM_EMAIL")
+                   or "onboarding@resend.dev")
+        if re_from == "onboarding@resend.dev":
+            logger.warning(
+                "Resend from_email not configured — falling back to "
+                "onboarding@resend.dev. Add a verified domain email in "
+                "Admin Panel → API Keys → Resend for production.")
         result = await _send_via_resend(
             to, subject, html, text, template, re_key, re_from)
         await _write_log("resend", to, subject, template,

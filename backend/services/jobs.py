@@ -65,15 +65,25 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
 
         # Real DALL-E 3 hero (if enabled) + re-upload to R2
         image_url = None
+        inline_image_url = None
         if settings.get("includeHeroImages", True):
             await _update_job(job_id, progress=70)  # generating hero image
             openai_img = await llm.generate_hero_image(
                 gen["title"], settings.get("imageryPrompt", ""))
             if openai_img:
-                await _update_job(job_id, progress=85)  # uploading to storage
+                await _update_job(job_id, progress=80)  # uploading hero
                 from services import storage as _storage
                 image_url = await _storage.download_to_r2(
                     openai_img, f"articles/{article_id}/hero.jpg",
+                    content_type="image/jpeg")
+            # ── Master prompt Part 9 — one additional inline image
+            inline_openai = await llm.generate_inline_image(
+                search_term, settings.get("imageryPrompt", ""))
+            if inline_openai:
+                await _update_job(job_id, progress=85)  # uploading inline
+                from services import storage as _storage  # noqa: F811
+                inline_image_url = await _storage.download_to_r2(
+                    inline_openai, f"articles/{article_id}/inline.jpg",
                     content_type="image/jpeg")
 
         # ── Master prompt Part 5 — resolve internal/external link placeholders
@@ -96,6 +106,15 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
             search_term, (site_for_links or {}).get("categoryMapping"))
         wp_cat_id = (category or {}).get("id") if category else None
 
+        # ── Master prompt Part 9 — embed the single inline image
+        final_content = gen["content"]
+        if inline_image_url:
+            try:
+                final_content = llm.insert_inline_image(
+                    final_content, inline_image_url, alt_text=search_term)
+            except Exception as _e:
+                logger.warning("inline image insertion failed: %s", _e)
+
         slug = "-".join(gen["title"].lower().split())[:100] or article_id[:8]
         await db.articles.update_one(
             {"id": article_id},
@@ -104,7 +123,7 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
                 "metaTitle": gen.get("metaTitle") or gen["title"][:60],
                 "metaDescription": gen.get("metaDescription", ""),
                 "excerpt": gen.get("excerpt", ""),
-                "content": gen["content"],
+                "content": final_content,
                 "slug": slug,
                 "wordCount": gen["wordCount"],
                 "estimatedReadTime": gen.get("estimatedReadTime", 0),
@@ -112,6 +131,7 @@ async def run_article_generation(job_id: str, article_id: str, site_id: str,
                 "faqSchema": gen.get("faqSchema", []),
                 "suggestedTags": gen.get("suggestedTags", []),
                 "featuredImageUrl": image_url,
+                "inlineImageUrl": inline_image_url,
                 "seoScore": gen["seoScore"],
                 "wordpressCategoryId": wp_cat_id,
                 "wordpressCategoryName": (category or {}).get("name")

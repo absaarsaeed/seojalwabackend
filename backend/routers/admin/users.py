@@ -117,22 +117,95 @@ async def stats():
 @router.get("/dashboard/activity",
             dependencies=[Depends(get_admin_session)])
 async def activity(limit: int = 20):
+    """Combined real-data activity feed for the admin dashboard.
+
+    Pulls events from `users` (signups), `admin_audit_log` (admin actions),
+    `articles` (publications) and `user_activity_log` (site connections).
+    Returns most-recent-first. NO dummy data.
+    """
     db = get_db()
-    users = await db.users.find(
+    events: list[dict] = []
+
+    # Recent signups
+    recent_users = await db.users.find(
         {"deleted": {"$ne": True}},
-        {"_id": 0, "password": 0}).sort("createdAt", -1).limit(limit).to_list(limit)
-    subs = await db.subscriptions.find(
-        {}, {"_id": 0}).sort("createdAt", -1).limit(limit).to_list(limit)
-    events = []
-    for u in users:
-        events.append({"type": "signup", "userId": u["id"],
-                       "email": u["email"], "at": u["createdAt"]})
-    for s in subs:
+        {"_id": 0, "id": 1, "fullName": 1, "email": 1, "createdAt": 1}
+    ).sort("createdAt", -1).limit(10).to_list(10)
+    for u in recent_users:
+        events.append({
+            "type": "USER_REGISTERED",
+            "title": f"New signup: {u.get('fullName') or u['email']}",
+            "userId": u["id"], "email": u.get("email"),
+            "timestamp": u.get("createdAt"),
+            "at": u.get("createdAt"),  # legacy
+        })
+
+    # Recent admin audit entries
+    audit = await db.admin_audit_log.find(
+        {}, {"_id": 0}).sort("createdAt", -1).limit(10).to_list(10)
+    for a in audit:
+        title = a.get("action", "ADMIN_ACTION").replace("_", " ").title()
+        meta = a.get("metadata") or {}
+        target = a.get("targetType")
+        if target == "USER" and meta.get("userEmail"):
+            title = f"{title} — {meta['userEmail']}"
+        elif a.get("targetId"):
+            title = f"{title} — {a['targetId'][:8]}"
+        events.append({
+            "type": a.get("action"),
+            "title": title,
+            "adminUsername": a.get("adminUsername"),
+            "targetId": a.get("targetId"),
+            "changes": a.get("changes"),
+            "timestamp": a.get("createdAt"),
+            "at": a.get("createdAt"),
+        })
+
+    # Recent article publications
+    articles = await db.articles.find(
+        {"status": "PUBLISHED", "deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "title": 1, "userId": 1, "siteId": 1,
+         "publishedAt": 1}).sort("publishedAt", -1).limit(10).to_list(10)
+    for ar in articles:
+        events.append({
+            "type": "ARTICLE_PUBLISHED",
+            "title": f"Article published: {ar.get('title', '')[:60]}",
+            "userId": ar.get("userId"), "siteId": ar.get("siteId"),
+            "articleId": ar["id"],
+            "timestamp": ar.get("publishedAt"),
+            "at": ar.get("publishedAt"),
+        })
+
+    # Recent site connections from user_activity_log
+    connects = await db.user_activity_log.find(
+        {"action": "SITE_CONNECTED"}, {"_id": 0}
+    ).sort("createdAt", -1).limit(10).to_list(10)
+    for c in connects:
+        m = c.get("metadata") or {}
+        events.append({
+            "type": "SITE_CONNECTED",
+            "title": f"Site connected: {m.get('siteName', '')}",
+            "userId": c.get("userId"),
+            "siteId": m.get("siteId"),
+            "timestamp": c.get("createdAt"),
+            "at": c.get("createdAt"),
+        })
+
+    # Subscription status changes
+    recent_subs = await db.subscriptions.find(
+        {}, {"_id": 0}).sort("createdAt", -1).limit(10).to_list(10)
+    for s in recent_subs:
         events.append({
             "type": "subscription_" + s.get("status", "?").lower(),
-            "userId": s["userId"],
-            "planId": s.get("planId"), "at": s.get("createdAt")})
-    events.sort(key=lambda x: x.get("at", ""), reverse=True)
+            "title": f"Subscription {s.get('status', '?').lower()}",
+            "userId": s.get("userId"),
+            "planId": s.get("planId"),
+            "timestamp": s.get("createdAt"),
+            "at": s.get("createdAt"),
+        })
+
+    events.sort(key=lambda x: x.get("timestamp") or x.get("at") or "",
+                reverse=True)
     return ok(events[:limit])
 
 
@@ -384,6 +457,19 @@ async def update_subscription(user_id: str, body: SubscriptionUpdateReq,
         changes = {k: {"from": None, "to": v}
                    for k, v in updates.items() if k != "updatedAt"}
 
+    # Resolve planId in the diff to plan names for human-readable audit
+    if "planId" in changes:
+        new_plan = await db.plans.find_one(
+            {"id": changes["planId"]["to"]}, {"_id": 0, "name": 1}) \
+            if changes["planId"]["to"] else None
+        old_plan = await db.plans.find_one(
+            {"id": changes["planId"]["from"]}, {"_id": 0, "name": 1}) \
+            if changes["planId"]["from"] else None
+        changes["plan"] = {
+            "from": (old_plan or {}).get("name"),
+            "to": (new_plan or {}).get("name"),
+        }
+
     # Notify the user (in-app + email)
     from services import email as _email
     try:
@@ -439,10 +525,12 @@ async def update_subscription(user_id: str, body: SubscriptionUpdateReq,
     # Audit
     await log_action(
         "USER_PLAN_CHANGED" if body.planId else "USER_STATUS_CHANGED",
-        target_type="subscription", target_id=user_id,
+        target_type="USER", target_id=user_id,
+        admin_username="admin",
         ip_address=(request.client.host if request.client else ""),
         changes=changes,
-        metadata={"adminNote": body.adminNote or ""})
+        metadata={"userEmail": user.get("email"),
+                   "adminNote": body.adminNote or ""})
 
     fresh = await db.subscriptions.find_one({"id": sub_id}, {"_id": 0})
     plan = (await db.plans.find_one(

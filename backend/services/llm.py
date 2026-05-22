@@ -5,6 +5,7 @@ Reads OPENAI_API_KEY from env (falls back to EMERGENT_LLM_KEY).
 """
 import logging
 import os
+import re
 from typing import Optional
 
 from openai import AsyncOpenAI
@@ -243,6 +244,71 @@ async def generate_hero_image(title: str, imagery_prompt: str = "") -> str | Non
     except Exception as e:
         logger.warning("DALL-E hero gen failed: %s", e)
         return None
+
+
+async def generate_inline_image(topic: str,
+                                 imagery_prompt: str = "") -> str | None:
+    """One contextual inline DALL-E 3 image for an article.
+
+    Distinct from the hero — square aspect ratio, illustrative/diagrammatic
+    style. Caller is responsible for inserting it into the content.
+    """
+    style = imagery_prompt or "clean modern illustration, informative"
+    prompt = (
+        f"Illustration or visual for an article section about '{topic}'. "
+        f"Informative, relevant, clean style. No text in the image. "
+        f"Square aspect ratio. Style: {style}"
+    )
+    try:
+        from openai import AsyncOpenAI
+        key = await _api_key_async()
+        client = AsyncOpenAI(api_key=key)
+        resp = await client.images.generate(
+            model="dall-e-3", prompt=prompt,
+            size="1024x1024", quality="standard", n=1,
+        )
+        return resp.data[0].url
+    except Exception as e:
+        logger.warning("DALL-E inline gen failed: %s", e)
+        return None
+
+
+def insert_inline_image(content_html: str, image_url: str,
+                         alt_text: str = "") -> str:
+    """Insert one inline image into article HTML after the 2nd-or-3rd <h2>.
+
+    Falls back to inserting after the first paragraph if no headings exist.
+    Deterministic — no LLM call needed.
+    """
+    if not content_html or not image_url:
+        return content_html or ""
+    img_html = (
+        f'<figure style="margin:2rem auto;text-align:center">'
+        f'<img src="{image_url}" alt="{alt_text or "Illustration"}" '
+        f'style="width:100%;max-width:800px;height:auto;display:block;'
+        f'margin:0 auto;border-radius:8px" />'
+        f"</figure>"
+    )
+    # Find all H2s
+    h2_positions = [m.end() for m in re.finditer(
+        r"</h2\s*>", content_html, re.IGNORECASE)]
+    if len(h2_positions) >= 2:
+        # Insert right after the 2nd H2's closing tag (so image follows
+        # the first section's heading + paragraph naturally)
+        pos = h2_positions[1]
+        # Move past any trailing whitespace
+        while pos < len(content_html) and content_html[pos] in (" ", "\n"):
+            pos += 1
+        return content_html[:pos] + "\n" + img_html + "\n" + content_html[pos:]
+    if h2_positions:
+        pos = h2_positions[0]
+        return content_html[:pos] + "\n" + img_html + "\n" + content_html[pos:]
+    # No H2 — insert after first </p>
+    p_end = re.search(r"</p\s*>", content_html, re.IGNORECASE)
+    if p_end:
+        pos = p_end.end()
+        return content_html[:pos] + "\n" + img_html + "\n" + content_html[pos:]
+    return img_html + content_html
 
 
 async def generate_social_caption(article_title: str, platform: str,

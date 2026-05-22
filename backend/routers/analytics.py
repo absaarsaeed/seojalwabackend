@@ -170,13 +170,64 @@ async def gsc_connect(body: GscConnectReq, user=Depends(get_current_user)):
 
 @router.get("/gsc/connect")
 async def gsc_authorize(user=Depends(get_current_user)):
-    """Step 1 — return the Google authorize URL with state = userId."""
-    from services import gsc as _gsc
-    state = user["id"]
-    url = _gsc.build_authorize_url(state)
-    if not url:
-        raise APIError("Google OAuth not configured", "GSC_NOT_CONFIGURED",
-                       400)
+    """Step 1 — return the Google authorize URL with state = userId.
+
+    Loads google_oauth.client_id / client_secret from the admin-configured
+    DB store first, falls back to GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+    env vars second. Logs explicit progress so failures are diagnosable.
+    """
+    import logging as _logging
+    from services.config import config_service
+    log = _logging.getLogger("jalwa.gsc")
+
+    client_id = await config_service.get_value("google_oauth", "client_id")
+    client_secret = await config_service.get_value(
+        "google_oauth", "client_secret")
+    log.info("GSC connect — DB client_id=%s client_secret=%s",
+             "YES" if client_id else "NO",
+             "YES" if client_secret else "NO")
+
+    if not client_id:
+        client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    if not client_secret:
+        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    if not (client_id and client_secret):
+        log.warning("GSC connect — Google OAuth not configured for user %s",
+                    user["id"])
+        raise APIError(
+            "Google OAuth not configured. Go to Admin Panel → API Keys → "
+            "Google Services and add your Client ID and Secret.",
+            "GSC_NOT_CONFIGURED", 400)
+
+    # Build the authorize URL inline so we don't have to depend on env-only
+    # config inside services.gsc.build_authorize_url.
+    import urllib.parse as _u
+    redirect_uri = (os.environ.get("GOOGLE_REDIRECT_URI")
+                    or (await config_service.get_value(
+                        "google_oauth", "redirect_uri"))
+                    or "")
+    if not redirect_uri:
+        log.warning("GSC connect — no GOOGLE_REDIRECT_URI set; using "
+                    "best-effort callback")
+        # Best-effort: assume the same host as the request would resolve;
+        # the operator should set GOOGLE_REDIRECT_URI in env.
+        redirect_uri = (
+            f"{os.environ.get('BACKEND_URL', '').rstrip('/')}"
+            f"/api/analytics/gsc/callback")
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": ("https://www.googleapis.com/auth/webmasters.readonly "
+                  "https://www.googleapis.com/auth/webmasters"),
+        "state": user["id"],
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+    }
+    url = ("https://accounts.google.com/o/oauth2/v2/auth?"
+           + _u.urlencode(params))
+    log.info("GSC connect — generated authUrl for user %s", user["id"])
     return ok({"authUrl": url})
 
 
